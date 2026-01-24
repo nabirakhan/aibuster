@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+"""
+AIBuster - AI-Powered Directory Buster
+Enhanced version with progress bars, better error handling, and more features
+"""
+
+import argparse
+import sys
+import signal
+import os
+from colorama import Fore, Style, init
+from recon import WebRecon
+from ai import AIPathGenerator
+from buster import PathBuster
+from output import OutputFormatter
+
+# Try to import plugins, make it optional
+try:
+    from plugins import PluginManager
+    PLUGINS_AVAILABLE = True
+except ImportError:
+    PLUGINS_AVAILABLE = False
+    print(f"{Fore.YELLOW}[!] Plugins not available - continuing without plugin support{Style.RESET_ALL}")
+
+import logging
+
+# Initialize colorama
+init(autoreset=True)
+
+VERSION = "2.0.0"
+
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully"""
+    print(f"\n{Fore.YELLOW}[!] Scan interrupted by user{Style.RESET_ALL}")
+    sys.exit(0)
+
+def banner():
+    """Display enhanced banner"""
+    print(f"""
+{Fore.CYAN}╔═══════════════════════════════════════════════╗
+║         AIBuster v{VERSION} - Enhanced           ║
+║   AI-Powered Intelligent Directory Buster      ║
+║        with Progress Tracking & Plugins        ║
+╚═══════════════════════════════════════════════╝{Style.RESET_ALL}
+""")
+
+def parse_args():
+    """Parse enhanced command line arguments"""
+    parser = argparse.ArgumentParser(
+        description="AIBuster - AI-powered directory enumeration",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s -u https://example.com
+  %(prog)s -u https://target.com -t 20 -v -o results.json
+  %(prog)s -u https://target.com --ai-model local --format html
+  %(prog)s -u https://target.com --plugins wordpress,api-scanner
+"""
+    )
+    
+    # Required arguments
+    parser.add_argument("-u", "--url", required=True, help="Target URL")
+    
+    # Performance arguments
+    parser.add_argument("-t", "--threads", type=int, default=10, help="Number of threads (default: 10)")
+    parser.add_argument("--timeout", type=int, default=5, help="Request timeout in seconds (default: 5)")
+    parser.add_argument("--delay", type=float, default=0, help="Delay between requests in seconds")
+    parser.add_argument("--retries", type=int, default=2, help="Number of retries for failed requests")
+    
+    # AI and path generation
+    parser.add_argument("--no-ai", action="store_true", help="Disable AI path generation")
+    parser.add_argument("--ai-model", default="local", choices=["claude", "openai", "local"], 
+                       help="AI model to use (default: local)")
+    parser.add_argument("--api-key", help="API key for AI services (Claude/OpenAI)")
+    parser.add_argument("--wordlist", help="Use custom wordlist instead of AI")
+    parser.add_argument("--extensions", default="php,html,js,txt,json", 
+                       help="File extensions to test (comma-separated)")
+    parser.add_argument("--depth", type=int, default=1, help="Directory depth to scan (1-3)")
+    
+    # Output and reporting
+    parser.add_argument("-o", "--output", help="Save results to file")
+    parser.add_argument("--format", default="json", choices=["json", "csv", "html", "xml", "md"], 
+                       help="Output format (default: json)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    parser.add_argument("--debug", action="store_true", help="Debug mode with detailed logging")
+    parser.add_argument("--quiet", action="store_true", help="Minimal output (only results)")
+    
+    # Advanced features
+    parser.add_argument("--plugins", help="Enable plugins (comma-separated)")
+    parser.add_argument("--proxy", help="Use proxy (format: http://proxy:port)")
+    parser.add_argument("--rate-limit", type=int, help="Maximum requests per minute")
+    parser.add_argument("--cookies", help="Cookies to send with requests")
+    parser.add_argument("--headers", help="Custom headers (JSON string)")
+    parser.add_argument("--user-agent", default="Mozilla/5.0 (AIBuster-Scanner)", 
+                       help="Custom User-Agent string")
+    
+    return parser.parse_args()
+
+def setup_logging(args):
+    """Configure logging based on verbosity"""
+    level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('aibuster.log'),
+            logging.StreamHandler() if not args.quiet else logging.NullHandler()
+        ]
+    )
+    return logging.getLogger(__name__)
+
+def validate_args(args):
+    """Validate command line arguments"""
+    if not args.url.startswith(('http://', 'https://')):
+        raise ValueError("URL must start with http:// or https://")
+    
+    if args.threads < 1 or args.threads > 100:
+        raise ValueError("Threads must be between 1 and 100")
+    
+    if args.depth < 1 or args.depth > 3:
+        raise ValueError("Depth must be between 1 and 3")
+    
+    # Check API key if using AI models
+    if not args.no_ai and args.ai_model in ['claude', 'openai']:
+        if not args.api_key and not os.getenv('ANTHROPIC_API_KEY') and not os.getenv('OPENAI_API_KEY'):
+            print(f"{Fore.YELLOW}[!] Warning: No API key provided for {args.ai_model}. Falling back to local mode.{Style.RESET_ALL}")
+            args.ai_model = 'local'
+    
+    return True
+
+def get_builtin_paths(recon_data):
+    """Get built-in paths for fallback"""
+    paths = [
+        '/admin', '/administrator', '/login', '/dashboard',
+        '/api', '/api/v1', '/api/v2', '/graphql', '/graphiql',
+        '/config', '/configuration', '/settings',
+        '/.env', '/config.php', '/config.json',
+        '/.git', '/git', '/svn', '/.svn',
+        '/backup', '/backups', '/backup.zip', '/backup.tar',
+        '/db', '/database', '/sql', '/mysql',
+        '/wp-admin', '/wp-login.php', '/wp-content',
+        '/manager', '/console', '/admin-console',
+        '/test', '/testing', '/dev', '/development',
+        '/logs', '/error_log', '/access_log',
+        '/uploads', '/files', '/downloads',
+        '/cgi-bin', '/cgi', '/cgi/test.cgi',
+        '/.well-known', '/.well-known/security.txt',
+        '/robots.txt', '/sitemap.xml', '/humans.txt'
+    ]
+    
+    # Add technology-specific paths
+    tech = recon_data.get('tech', [])
+    if 'WordPress' in tech:
+        paths.extend(['/wp-includes', '/wp-json', '/xmlrpc.php', '/license.txt'])
+    if 'PHP' in tech:
+        paths.extend(['/info.php', '/phpinfo.php', '/test.php'])
+    if 'Laravel' in tech:
+        paths.extend(['/storage', '/.env.example', '/artisan'])
+    
+    return paths
+
+def main():
+    """Enhanced main execution flow"""
+    # Set up signal handler
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    banner()
+    args = parse_args()
+    
+    try:
+        validate_args(args)
+    except ValueError as e:
+        print(f"{Fore.RED}[-] Argument error: {e}{Style.RESET_ALL}")
+        sys.exit(1)
+    
+    # Setup logging
+    logger = setup_logging(args)
+    
+    # Initialize output formatter
+    output = OutputFormatter(args.output, args.verbose, args.quiet, args.format)
+    
+    try:
+        output.status("Starting AIBuster scan...")
+        logger.info(f"Starting scan for {args.url}")
+        
+        # Initialize plugin manager if requested
+        plugin_manager = None
+        if args.plugins and PLUGINS_AVAILABLE:
+            output.status("Loading plugins...")
+            plugin_manager = PluginManager(args.plugins.split(','), args)
+            plugin_manager.load_plugins()
+        elif args.plugins and not PLUGINS_AVAILABLE:
+            output.warning("Plugins requested but not available. Install plugins.py to use this feature.")
+        
+        # Step 1: Reconnaissance
+        output.status("Performing reconnaissance...")
+        recon = WebRecon(args.url, args.timeout, args.user_agent, args.proxy, args.cookies)
+        recon_data = recon.analyze()
+        
+        if args.verbose:
+            output.info(f"Reconnaissance completed:")
+            output.info(f"  - Links found: {len(recon_data.get('links', []))}")
+            output.info(f"  - Scripts found: {len(recon_data.get('scripts', []))}")
+            output.info(f"  - Technologies: {', '.join(recon_data.get('tech', []))}")
+            output.info(f"  - Keywords extracted: {len(recon_data.get('keywords', []))}")
+        
+        # Step 2: Generate paths
+        paths = []
+        if args.wordlist:
+            output.status(f"Loading wordlist: {args.wordlist}")
+            try:
+                with open(args.wordlist, 'r') as f:
+                    paths = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+                output.success(f"Loaded {len(paths)} paths from wordlist")
+            except FileNotFoundError:
+                output.error(f"Wordlist not found: {args.wordlist}")
+                sys.exit(1)
+        elif not args.no_ai:
+            output.status(f"Generating AI-powered paths using {args.ai_model}...")
+            ai_gen = AIPathGenerator(model=args.ai_model, api_key=args.api_key)
+            paths = ai_gen.generate_paths(recon_data, depth=args.depth)
+            output.success(f"Generated {len(paths)} intelligent paths")
+        else:
+            output.status("Using built-in path database...")
+            paths = get_builtin_paths(recon_data)
+        
+        # Add extensions if specified
+        if args.extensions and not args.wordlist:
+            paths_with_ext = []
+            for path in paths:
+                if '.' not in path.split('/')[-1]:  # Only add extensions to files without existing extensions
+                    for ext in args.extensions.split(','):
+                        paths_with_ext.append(f"{path}.{ext.strip()}")
+            paths.extend(paths_with_ext)
+            output.info(f"Added extensions: {args.extensions}")
+        
+        # Remove duplicates and sort
+        paths = sorted(list(set(paths)))
+        output.info(f"Total unique paths to test: {len(paths)}")
+        
+        # Step 3: Bust directories
+        output.status(f"Testing {len(paths)} paths with {args.threads} threads...")
+        buster = PathBuster(
+            args.url, 
+            args.threads, 
+            args.timeout, 
+            args.delay,
+            retries=args.retries,
+            proxy=args.proxy,
+            cookies=args.cookies,
+            rate_limit=args.rate_limit,
+            user_agent=args.user_agent,
+            headers=args.headers
+        )
+        
+        # Run scan
+        results = buster.bust(paths, output)
+        
+        # Step 4: Run plugins if enabled
+        if plugin_manager:
+            output.status("Running plugins...")
+            plugin_results = plugin_manager.run_plugins(recon_data, results['results'])
+            results['results']['plugin_results'] = plugin_results
+        
+        # Step 5: Display and save results
+        output.summary(results['results'])
+        
+        if args.output:
+            output.save_results(results['results'])
+            output.success(f"Results saved to {args.output}")
+        
+        # Step 6: Generate report
+        if args.output and args.format:
+            output.generate_report(results['results'], args.format)
+        
+        logger.info(f"Scan completed. Found {len(results['results']['found'])} accessible paths.")
+        
+    except KeyboardInterrupt:
+        output.error("\nScan interrupted by user")
+        logger.warning("Scan interrupted by user")
+        sys.exit(0)
+    except Exception as e:
+        output.error(f"Error: {str(e)}")
+        logger.error(f"Error during scan: {str(e)}", exc_info=True)
+        if args.debug:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
