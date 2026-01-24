@@ -41,6 +41,10 @@
 git clone https://github.com/yourusername/aibuster.git
 cd aibuster
 
+# Create python virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
 # Install with enhanced features
 pip install -r requirements.txt
 

@@ -6,3 +6,7 @@ urllib3>=2.0.0
 
 # Enhanced features (OPTIONAL - can skip if not needed)
 python-dotenv>=1.0.0
+
+# Optional AI dependencies
+openai>=1.0.0  # OpenAI API
+anthropic>=0.7.0  # Claude API
