@@ -1,79 +1,302 @@
+````md
 # AIBuster 2.0 🚀
 
 **AI-Powered Intelligent Directory & File Discovery Tool**
 
-## ✨ Enhanced Features
+AIBuster is a next-generation directory and file discovery tool that uses **AI models (Claude, OpenAI, or local logic)** to generate context-aware, technology-specific paths instead of relying only on static wordlists.
 
-### 🤖 **Advanced AI Integration**
-- Multiple AI models (Claude, GPT-4, Local)
-- Context-aware path generation
-- Technology-specific predictions
-- Adaptive learning from scan results
+It is designed for **penetration testers, bug bounty hunters, and security researchers** who want smarter reconnaissance with fewer requests.
 
-### 📊 **Smart Output Formats**
-- JSON, CSV, HTML, XML, Markdown
-- Interactive HTML reports
-- Real-time progress tracking
-- Comprehensive statistics
+---
 
-### ⚡ **Performance & Reliability**
-- Intelligent rate limiting
-- Connection pooling
-- Automatic retries with backoff
-- Concurrent scanning with thread management
+## Features
 
-### 🔌 **Plugin System**
-- WordPress vulnerability scanner
+### AI-Driven Path Generation
+- Uses LLMs (Claude / OpenAI) to generate intelligent paths
+- Adapts to detected technologies and extracted keywords
+- Automatically falls back to local logic if AI is unavailable
+
+### Reconnaissance-First Approach
+- Identifies frameworks, CMSs, and CDNs
+- Extracts keywords from responses
+- Prioritizes high-probability directories and files
+
+### Performance & Control
+- Multi-threaded scanning (1–100 threads)
+- Rate limiting, delays, and retries
+- Stealth scanning mode
+- Recursive depth scanning (1–3 levels)
+
+### Plugin System
+- WordPress scanning
+- Sensitive file detection
 - API endpoint discovery
-- Sensitive file detector
-- Extensible architecture
+- Extensible plugin architecture
 
-### 🎯 **Advanced Scanning Modes**
-- Stealth mode (random delays, User-Agent rotation)
-- Smart mode (adaptive path prioritization)
-- Recursive scanning (depth control)
-- Custom extensions testing
+### Output & Reporting
+- Real-time console progress bar
+- JSON, CSV, HTML, XML, Markdown
+- Interactive HTML reports with statistics
 
-## 🚀 Installation
+---
+
+## Installation
 
 ```bash
-# Clone repository
 git clone https://github.com/yourusername/aibuster.git
 cd aibuster
 
-# Create python virtual environment
 python3 -m venv venv
 source venv/bin/activate
 
-# Install with enhanced features
 pip install -r requirements.txt
 
-# Optional: Install AI dependencies
-pip install openai anthropic
+# Optional AI providers
+pip install anthropic openai
 
-# Make executable
 chmod +x aibuster.py
+````
 
-# Install system-wide
+### Optional System-Wide Install
+
+```bash
 sudo ln -s $(pwd)/aibuster.py /usr/bin/aibuster
+```
+
+---
 
 ## API Key Setup
 
-AIBuster uses an LLM to intelligently generate directory paths.
-
-1. Obtain an API key from your provider
-2. Export it as an environment variable:
+AIBuster uses AI models to generate paths. You may use **Claude (Anthropic)** or **OpenAI**.
 
 ```bash
-# For Claude (Anthropic)
-export ANTHROPIC_API_KEY="your-api-key-here"
+# Claude
+export ANTHROPIC_API_KEY="your-api-key"
 
-# For OpenAI
-export OPENAI_API_KEY="your-api-key-here"
+# OpenAI
+export OPENAI_API_KEY="your-api-key"
+```
 
-# Make it permanent (add to ~/.bashrc or ~/.zshrc)
-echo 'export ANTHROPIC_API_KEY="your-api-key-here"' >> ~/.bashrc
+Make it permanent:
+
+```bash
+echo 'export ANTHROPIC_API_KEY="your-api-key"' >> ~/.bashrc
 source ~/.bashrc
+```
 
-# OR Pass API key via command line
-./aibuster.py -u https://tesla.com --ai-model claude --api-key "your-api-key-here"
+Or pass the key directly:
+
+```bash
+./aibuster.py -u https://target.com --ai-model claude --api-key YOUR_KEY
+```
+
+---
+
+## Supported AI Models
+
+| Model    | Description                                 |
+| -------- | ------------------------------------------- |
+| `claude` | Claude 3 (Haiku / Sonnet) – fast & low cost |
+| `openai` | GPT-based models                            |
+| `local`  | No API required (fallback mode)             |
+
+---
+
+## Basic Usage
+
+```bash
+./aibuster.py -u https://target.com
+```
+
+This will:
+
+1. Perform reconnaissance
+2. Generate AI-powered paths
+3. Test paths using 10 threads
+4. Display results in real time
+
+---
+
+## Scan Examples
+
+### 1. Quick Reconnaissance Scan
+
+```bash
+./aibuster.py -u https://target.com --ai-model claude -v
+```
+
+### 2. Deep Scan with HTML Report
+
+```bash
+./aibuster.py -u https://target.com --ai-model claude -t 20 --depth 2 -v -o report.html --format html
+```
+
+### 3. WordPress Site Scan
+
+```bash
+./aibuster.py -u https://wordpress-site.com --ai-model claude --plugins wordpress,sensitive-files -v
+```
+
+### 4. API Endpoint Discovery
+
+```bash
+./aibuster.py -u https://api.example.com --ai-model claude --extensions json,xml,graphql -v
+```
+
+### 5. Stealth Scan (Low Noise)
+
+```bash
+./aibuster.py -u https://target.com --ai-model local -t 5 --delay 1 --rate-limit 10 -v
+```
+
+### 6. Custom Wordlist Scan
+
+```bash
+./aibuster.py -u https://target.com --wordlist /path/to/wordlist.txt --extensions php,html -t 15
+```
+
+---
+
+## Command-Line Options
+
+### Required
+
+| Option      | Description |
+| ----------- | ----------- |
+| `-u, --url` | Target URL  |
+
+### Performance
+
+| Option          | Default   |
+| --------------- | --------- |
+| `-t, --threads` | 10        |
+| `--timeout`     | 5 seconds |
+| `--delay`       | 0         |
+| `--retries`     | 2         |
+| `--rate-limit`  | Unlimited |
+
+### AI & Path Generation
+
+| Option         | Default              |
+| -------------- | -------------------- |
+| `--ai-model`   | claude               |
+| `--no-ai`      | Disabled             |
+| `--wordlist`   | None                 |
+| `--extensions` | php,html,js,txt,json |
+| `--depth`      | 1                    |
+
+### Output
+
+| Option          | Default  |
+| --------------- | -------- |
+| `-o, --output`  | None     |
+| `--format`      | json     |
+| `-v, --verbose` | Disabled |
+| `--quiet`       | Disabled |
+| `--debug`       | Disabled |
+
+### Advanced
+
+| Option         | Description                      |
+| -------------- | -------------------------------- |
+| `--plugins`    | Enable plugins (comma-separated) |
+| `--proxy`      | HTTP proxy                       |
+| `--cookies`    | Custom cookies                   |
+| `--headers`    | Custom headers (JSON)            |
+| `--user-agent` | Custom User-Agent                |
+
+---
+
+## Understanding Results
+
+### Symbols
+
+| Symbol | Meaning            |
+| ------ | ------------------ |
+| ✓      | Accessible (200)   |
+| →      | Redirect (301/302) |
+| ✗      | Forbidden (403)    |
+| 🔒     | Unauthorized (401) |
+
+**Note:** Redirects and forbidden responses often indicate real, protected resources.
+
+---
+
+## Project Structure
+
+```
+aibuster/
+├── aibuster.py
+├── recon.py
+├── ai.py
+├── buster.py
+├── output.py
+├── plugins.py
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## Performance Tips
+
+* Start with low threads on unknown targets
+* Use AI models for higher-quality results
+* Apply rate limiting on production sites
+* Use HTML reports for client deliverables
+* Run plugins after initial scans
+
+---
+
+## Troubleshooting
+
+### API Key Issues
+
+```bash
+echo $ANTHROPIC_API_KEY
+```
+
+### Debug Mode
+
+```bash
+./aibuster.py -u https://target.com --debug
+```
+
+---
+
+## Legal & Ethical Notice
+
+**Use AIBuster only on systems you are authorized to test.**
+
+Unauthorized scanning is illegal and unethical.
+You are responsible for how you use this tool.
+
+---
+
+## Why AIBuster?
+
+**Traditional Dirbusters**
+
+* Static wordlists
+* High noise
+* Poor context awareness
+
+**AIBuster**
+
+* AI-generated paths
+* Context-aware reconnaissance
+* Fewer, smarter requests
+* Cleaner results
+
+---
+
+## License
+
+MIT License
+
+---
+
+*AI-driven reconnaissance for the modern web.*
+
+```
+```

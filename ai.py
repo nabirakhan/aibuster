@@ -6,6 +6,7 @@ Multiple AI models and prompt templates
 import json
 import os
 import re
+import time
 from typing import List, Dict, Any
 import requests
 from abc import ABC, abstractmethod
@@ -22,18 +23,22 @@ class BaseAIModel(ABC):
         pass
 
 class ClaudeAIModel(BaseAIModel):
-    """Claude AI implementation"""
+    """Claude AI implementation - WORKING VERSION"""
     
     def __init__(self, api_key=None):
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        if not self.api_key:
+            raise ValueError("Claude API key not found. Set ANTHROPIC_API_KEY environment variable.")
+        
         self.api_url = "https://api.anthropic.com/v1/messages"
-        self.model = "claude-3-sonnet-20240229"
+        self.model = "claude-3-haiku-20240307"
+        self.max_tokens = 2000
     
     def get_model_name(self):
-        return "Claude 3 Sonnet"
+        return "Claude 3 Haiku"
     
     def generate_paths(self, context: Dict[str, Any]) -> List[str]:
-        """Generate paths using Claude AI"""
+        """Generate paths using Claude AI - ACTUALLY CALLS API"""
         
         prompt = self._build_prompt(context)
         
@@ -45,131 +50,137 @@ class ClaudeAIModel(BaseAIModel):
         
         payload = {
             "model": self.model,
-            "max_tokens": 4000,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.7
+            "max_tokens": self.max_tokens,
+            "temperature": 0.7,
+            "system": "You are a web security expert. Generate ONLY a JSON array of directory paths. Each path must start with /. Return only the JSON array, no explanations.",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
         }
         
         try:
-            response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
-            response.raise_for_status()
+            print(f"🔗 Calling Claude API...")
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
+            
+            # Check for errors
+            if response.status_code == 401:
+                print(f"❌ Invalid API key: {self.api_key[:15]}...")
+                raise Exception("Claude API: Invalid API key")
+            elif response.status_code == 402:
+                print("❌ No credits available")
+                print("💡 Add API credits at: https://console.anthropic.com/settings/billing")
+                raise Exception("Claude API: Payment required - add API credits")
+            elif response.status_code == 429:
+                raise Exception("Claude API: Rate limited")
+            elif response.status_code != 200:
+                error_text = response.text[:200]
+                raise Exception(f"Claude API Error {response.status_code}: {error_text}")
+            
             data = response.json()
             
-            content = data['content'][0]['text']
-            return self._parse_response(content)
+            if 'content' in data and len(data['content']) > 0:
+                content = data['content'][0]['text']
+                print(f"✅ Received {len(content)} chars from Claude")
+                return self._parse_response(content)
+            else:
+                raise Exception("No content in Claude response")
             
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Claude API connection error: {str(e)}")
         except Exception as e:
             raise Exception(f"Claude API error: {str(e)}")
     
     def _build_prompt(self, context: Dict[str, Any]) -> str:
-        """Build detailed prompt for Claude"""
+        """Build prompt for Claude"""
         
-        return f"""As a senior penetration tester and web security expert, analyze this website reconnaissance data and generate the most likely hidden paths.
+        url = context.get('url', 'Unknown')
+        tech = ', '.join(context.get('tech', [])[:5]) if context.get('tech') else 'Unknown'
+        keywords = ', '.join(context.get('keywords', [])[:15]) if context.get('keywords') else 'None'
+        
+        return f"""Analyze this website and generate hidden directory paths for penetration testing.
 
-WEBSITE ANALYSIS:
-- URL: {context['url']}
-- Technologies: {', '.join(context['tech'])}
-- Keywords Found: {', '.join(context['keywords'][:30])}
-- Links Discovered: {len(context['links'])} links
-- Scripts Found: {len(context['scripts'])} JavaScript/CSS files
-- Forms Found: {len(context['forms'])} forms
-- Status Code: {context.get('status_code', 'Unknown')}
-- Server: {context.get('server', 'Unknown')}
+Website: {url}
+Technologies: {tech}
+Keywords: {keywords}
 
-SCAN CONTEXT:
-- Scan Type: Directory/File Enumeration
-- Purpose: Security Assessment
-- Priority: High-value targets first
+Generate 30-80 likely paths including:
+- Admin panels (/admin, /login, /dashboard)
+- API endpoints (/api, /api/v1, /graphql)
+- Config files (/.env, /config.php, /.htaccess)
+- Backups (/backup, /backup.zip, /dump.sql)
+- Hidden dirs (/.git, /logs, /debug)
+- Tech-specific paths based on detected technologies
 
-GENERATION GUIDELINES:
-1. Generate paths for admin interfaces and control panels
-2. Include API endpoints and webservices
-3. List configuration files and backups
-4. Consider technology-specific paths
-5. Include common hidden directories
-6. Add debug/testing endpoints
-7. Include upload/download directories
-8. List database/admin interfaces
-9. Include cache and session directories
-10. Add version control system paths
+Return ONLY a JSON array. Example format:
+["/admin", "/api/v1", "/.env", "/wp-admin"]
 
-PATH CATEGORIES TO COVER:
-A) ADMINISTRATION:
-   - Login panels, dashboards, admin consoles
-   - CMS-specific admin paths
-   - Server administration interfaces
-
-B) API & WEBSERVICES:
-   - REST API endpoints
-   - GraphQL interfaces
-   - SOAP/WSDL endpoints
-   - Webhook endpoints
-
-C) CONFIGURATION & SECURITY:
-   - Environment/config files
-   - Security certificates
-   - Backup/archive files
-   - Log files
-
-D) DEVELOPMENT & DEBUG:
-   - Debug interfaces
-   - Testing endpoints
-   - Developer tools
-   - Documentation
-
-E) FILE & STORAGE:
-   - Upload directories
-   - Media libraries
-   - Static resources
-   - Cache directories
-
-FORMAT REQUIREMENTS:
-- Return ONLY a JSON array of paths
-- Each path must start with /
-- Include paths for different HTTP methods (GET, POST)
-- Prioritize paths by likelihood
-- Include both directories and files
-
-SAMPLE OUTPUT FORMAT:
-["/admin/login.php", "/api/v1/users", "/.env", "/wp-admin", "/debug"]
-
-Now generate the JSON array of paths:"""
-
+Generate the JSON array now:"""
+    
     def _parse_response(self, text: str) -> List[str]:
-        """Parse AI response and extract paths"""
-        # Clean response
-        text = text.strip()
-        text = re.sub(r'```(json)?|```', '', text)
+        """Parse Claude response"""
+        if not text:
+            return []
+        
+        print("📝 Parsing Claude response...")
         
         try:
-            paths = json.loads(text)
-            if isinstance(paths, list):
-                # Validate and clean paths
-                valid_paths = []
-                for path in paths:
-                    if isinstance(path, str) and path.startswith('/'):
-                        valid_paths.append(path)
-                return valid_paths
-        except json.JSONDecodeError:
-            pass
-        
-        # Fallback: extract paths using regex
-        paths = re.findall(r'["\'](/[^"\'\s]+)["\']', text)
-        return list(set(paths))
+            # Remove markdown code blocks
+            text = re.sub(r'```(json)?|```', '', text).strip()
+            
+            # Try to find JSON array
+            json_match = re.search(r'\[.*\]', text, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+            else:
+                data = json.loads(text)
+            
+            # Handle dict or list
+            if isinstance(data, dict):
+                for key in ['paths', 'directories', 'results']:
+                    if key in data and isinstance(data[key], list):
+                        data = data[key]
+                        break
+            
+            # Clean paths
+            cleaned = []
+            if isinstance(data, list):
+                for path in data:
+                    if isinstance(path, str):
+                        path = path.strip()
+                        if not path.startswith('/'):
+                            path = '/' + path
+                        if len(path) > 1 and not path.startswith('//'):
+                            cleaned.append(path)
+            
+            print(f"✅ Parsed {len(cleaned)} valid paths")
+            return list(set(cleaned))
+            
+        except Exception as e:
+            print(f"⚠️ Parse error: {e}")
+            # Regex fallback
+            paths = re.findall(r'["\'](/[^"\'\s]+)["\']', text)
+            return list(set(paths))
 
 class OpenAIModel(BaseAIModel):
     """OpenAI GPT implementation"""
     
     def __init__(self, api_key=None):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not self.api_key:
+            raise ValueError("OpenAI API key not found. Set OPENAI_API_KEY environment variable.")
+        
         self.api_url = "https://api.openai.com/v1/chat/completions"
-        self.model = "gpt-4-turbo-preview"
+        self.model = "gpt-3.5-turbo"
+        self.max_tokens = 1500
     
     def get_model_name(self):
-        return "GPT-4 Turbo"
+        return f"OpenAI {self.model}"
     
     def generate_paths(self, context: Dict[str, Any]) -> List[str]:
-        """Generate paths using OpenAI GPT"""
+        """Generate paths using OpenAI"""
         
         prompt = self._build_prompt(context)
         
@@ -181,226 +192,148 @@ class OpenAIModel(BaseAIModel):
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": "You are a web security expert generating directory/file paths for penetration testing."},
+                {"role": "system", "content": "You are a pentesting expert. Generate ONLY a JSON array of directory paths starting with /."},
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.7,
-            "max_tokens": 2000
+            "max_tokens": self.max_tokens,
+            "response_format": {"type": "json_object"}
         }
         
         try:
-            response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
-            response.raise_for_status()
-            data = response.json()
+            print("🔗 Calling OpenAI API...")
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
             
+            if response.status_code != 200:
+                error = response.json().get('error', {}).get('message', 'Unknown error')
+                raise Exception(f"OpenAI Error: {error}")
+            
+            data = response.json()
             content = data['choices'][0]['message']['content']
+            print(f"✅ Received response from OpenAI")
             return self._parse_response(content)
             
         except Exception as e:
             raise Exception(f"OpenAI API error: {str(e)}")
     
     def _build_prompt(self, context: Dict[str, Any]) -> str:
-        """Build prompt for OpenAI"""
-        return f"""Generate hidden directory and file paths for penetration testing based on this reconnaissance:
+        url = context.get('url', '')
+        tech = ', '.join(context.get('tech', [])[:5])
+        keywords = ', '.join(context.get('keywords', [])[:10])
+        
+        return f"""Generate hidden paths for penetration testing.
 
-Website: {context['url']}
-Technologies: {', '.join(context['tech'])}
-Keywords: {', '.join(context['keywords'][:20])}
-Discovered links: {len(context['links'])}
-Server headers: {context.get('server', 'Unknown')}
+Website: {url}
+Technologies: {tech}
+Keywords: {keywords}
 
-Generate a JSON array of the most likely hidden paths, prioritizing:
-1. Admin interfaces and login panels
-2. API endpoints and web services
-3. Configuration files (.env, config.*)
-4. Backup files and archives
-5. Technology-specific paths
-6. Debug and testing interfaces
-7. Upload directories
-8. Database interfaces
-
-Return ONLY a JSON array:"""
+Return JSON with "paths" key containing 20-50 directory paths.
+Example: {{"paths": ["/admin", "/api/v1", "/.env"]}}"""
+    
+    def _parse_response(self, text: str) -> List[str]:
+        try:
+            data = json.loads(text.strip())
+            if isinstance(data, dict) and "paths" in data:
+                paths = data["paths"]
+            else:
+                paths = []
+            
+            cleaned = []
+            for path in paths:
+                if isinstance(path, str):
+                    path = path.strip()
+                    if not path.startswith('/'):
+                        path = '/' + path
+                    if len(path) > 1:
+                        cleaned.append(path)
+            
+            return list(set(cleaned))
+        except:
+            return []
 
 class LocalModel(BaseAIModel):
-    """Local/offline AI model using pattern matching"""
+    """Local pattern-based model"""
     
     def __init__(self):
-        self.patterns = self._load_patterns()
+        pass
     
     def get_model_name(self):
         return "Local Pattern Matcher"
     
     def generate_paths(self, context: Dict[str, Any]) -> List[str]:
-        """Generate paths using pattern matching"""
-        paths = []
-        
-        # Technology-specific patterns
-        tech_patterns = {
-            'WordPress': ['/wp-', '/xmlrpc', '/feed', '/comments'],
-            'Django': ['/admin/', '/static/', '/media/', '/api/'],
-            'Laravel': ['/storage/', '/bootstrap/', '/public/'],
-            'PHP': ['/php', '/cgi-bin/', '/test.'],
-            'ASP.NET': ['/aspx', '/webresource.axd', '/trace.axd']
+        paths = {
+            '/admin', '/administrator', '/login', '/signin', '/dashboard',
+            '/panel', '/console', '/manager', '/api', '/api/v1', '/api/v2',
+            '/graphql', '/.env', '/config.php', '/config.json', '/backup',
+            '/backups', '/backup.zip', '/dump.sql', '/debug', '/test',
+            '/dev', '/uploads', '/files', '/media', '/logs', '/.git',
+            '/robots.txt', '/sitemap.xml', '/wp-admin', '/wp-login.php',
+            '/phpinfo.php', '/info.php'
         }
         
-        # Add technology-specific paths
-        for tech in context['tech']:
-            for key, patterns in tech_patterns.items():
-                if key.lower() in tech.lower():
-                    paths.extend(patterns)
+        # Add tech-specific paths
+        for tech in context.get('tech', []):
+            if 'wordpress' in tech.lower():
+                paths.update(['/wp-content', '/wp-includes', '/xmlrpc.php'])
+            if 'php' in tech.lower():
+                paths.update(['/phpinfo.php', '/test.php', '/cgi-bin/'])
         
-        # Keyword-based paths
-        for keyword in context['keywords'][:15]:
-            if len(keyword) > 2:
-                paths.extend([
-                    f'/{keyword}',
-                    f'/{keyword}/admin',
-                    f'/{keyword}.php',
-                    f'/{keyword}.json',
-                    f'/{keyword}/api',
-                    f'/admin/{keyword}'
-                ])
+        # Add keyword paths
+        for kw in context.get('keywords', [])[:10]:
+            if len(kw) > 2:
+                paths.update([f'/{kw}', f'/{kw}/admin', f'/{kw}.php'])
         
-        # Common paths database
-        common_paths = [
-            # Admin interfaces
-            '/admin', '/administrator', '/login', '/signin', '/dashboard',
-            '/panel', '/console', '/manager', '/sysadmin', '/root',
-            
-            # API endpoints
-            '/api', '/api/v1', '/api/v2', '/api/v3', '/graphql',
-            '/rest', '/soap', '/wsdl', '/webhook', '/webapi',
-            
-            # Configuration
-            '/.env', '/config.php', '/config.json', '/settings',
-            '/configuration', '/.config', '/secrets', '/credentials',
-            
-            # Backup files
-            '/backup', '/backups', '/backup.zip', '/backup.tar.gz',
-            '/dump.sql', '/database.sql', '/backup.sql',
-            
-            # Debug/Development
-            '/debug', '/test', '/testing', '/dev', '/development',
-            '/stage', '/staging', '/beta', '/alpha',
-            
-            # Files and uploads
-            '/uploads', '/files', '/downloads', '/media',
-            '/images', '/assets', '/static', '/public',
-            
-            # Logs
-            '/logs', '/log', '/error_log', '/access_log',
-            '/debug.log', '/app.log', '/system.log'
-        ]
-        
-        paths.extend(common_paths)
-        return list(set(paths))
-    
-    def _load_patterns(self):
-        """Load path patterns from file"""
-        # Could load from external patterns file
-        return {}
+        return sorted(list(paths))
 
 class AIPathGenerator:
-    """Enhanced AI path generator with multiple models"""
+    """Main path generator"""
     
-    def __init__(self, model="claude", api_key=None):
-        self.model_name = model
-        self.api_key = api_key
-        
-        # Initialize selected model
-        if model == "claude":
-            self.model = ClaudeAIModel(api_key)
-        elif model == "openai":
-            self.model = OpenAIModel(api_key)
-        elif model == "local":
-            self.model = LocalModel()
-        else:
-            raise ValueError(f"Unsupported model: {model}")
-    
-    def generate_paths(self, recon_data, depth=1, max_paths=500):
-        """Generate intelligent paths with depth consideration"""
-        
-        # Build comprehensive context
-        context = self._build_context(recon_data)
+    def __init__(self, model="local", api_key=None):
+        self.model_name = model.lower()
         
         try:
-            # Generate base paths
+            if self.model_name == "claude":
+                self.model = ClaudeAIModel(api_key)
+            elif self.model_name == "openai":
+                self.model = OpenAIModel(api_key)
+            else:
+                self.model = LocalModel()
+                self.model_name = "local"
+            
+            print(f"✅ Using {self.model.get_model_name()}")
+            
+        except ValueError as e:
+            print(f"⚠️ {str(e)}")
+            print("🔄 Falling back to local model")
+            self.model = LocalModel()
+            self.model_name = "local"
+    
+    def generate_paths(self, recon_data, depth=1, max_paths=500):
+        print(f"🔄 Generating paths using {self.model.get_model_name()}...")
+        start = time.time()
+        
+        try:
+            context = {
+                'url': recon_data.get('url', ''),
+                'keywords': recon_data.get('keywords', [])[:20],
+                'tech': recon_data.get('tech', []),
+                'links': recon_data.get('links', [])[:10],
+                'scripts': recon_data.get('scripts', [])[:10],
+                'forms': recon_data.get('forms', [])[:5]
+            }
+            
             paths = self.model.generate_paths(context)
             
-            # Apply depth if needed
-            if depth > 1:
-                paths = self._apply_depth(paths, depth)
+            duration = time.time() - start
+            print(f"✅ Generated {len(paths)} paths in {duration:.2f}s")
             
-            # Limit number of paths
             if len(paths) > max_paths:
                 paths = paths[:max_paths]
             
-            return paths
+            return sorted(list(set(paths)))
             
         except Exception as e:
-            print(f"AI generation warning: {e}")
-            # Fallback to local model
+            print(f"❌ Error: {e}")
+            print("🔄 Using local fallback...")
             fallback = LocalModel()
-            return fallback.generate_paths(context)
-    
-    def _build_context(self, data):
-        """Build detailed context for AI"""
-        
-        return {
-            'url': data['url'],
-            'keywords': data['keywords'][:50] if data['keywords'] else [],
-            'tech': data['tech'],
-            'links': data['links'][:20] if data['links'] else [],
-            'scripts': data['scripts'][:20] if data['scripts'] else [],
-            'forms': data['forms'][:10] if data['forms'] else [],
-            'server': data.get('headers', {}).get('Server', 'Unknown'),
-            'status_code': data.get('status_code', 'Unknown'),
-            'content_type': data.get('headers', {}).get('Content-Type', 'Unknown')
-        }
-    
-    def _apply_depth(self, paths, depth):
-        """Apply directory depth to paths"""
-        enhanced_paths = []
-        
-        for path in paths:
-            enhanced_paths.append(path)
-            
-            # For directories, add subdirectories
-            if depth > 1 and not path.endswith(('.php', '.html', '.js', '.txt', '.json', '.xml')):
-                for i in range(1, depth):
-                    subdir = f"{path}/subdir{i}" if not path.endswith('/') else f"{path}subdir{i}"
-                    enhanced_paths.append(subdir)
-                    
-                    # Add files in subdirectories
-                    enhanced_paths.extend([
-                        f"{subdir}/index.php",
-                        f"{subdir}/index.html",
-                        f"{subdir}/config.php"
-                    ])
-        
-        return enhanced_paths
-
-# Advanced prompt templates for different scenarios
-PROMPT_TEMPLATES = {
-    "comprehensive": """Generate comprehensive hidden paths for {url}
-Technologies: {tech}
-Focus on: admin panels, API endpoints, config files, backups, uploads, logs, debug interfaces""",
-    
-    "aggressive": """Generate aggressive penetration testing paths for {url}
-Include: sensitive files, configuration files, backup archives, database dumps, debug endpoints""",
-    
-    "stealthy": """Generate stealthy hidden paths for {url}
-Focus on: common paths, standard installations, default locations, common misconfigurations""",
-    
-    "api_focused": """Generate API-related paths for {url}
-Include: REST endpoints, GraphQL, webhooks, API documentation, API management interfaces""",
-    
-    "cms_specific": """Generate CMS-specific paths for {url} running {tech}
-Include: admin paths, plugin directories, theme files, configuration, backup locations"""
-}
-
-def get_prompt_template(template_name, context):
-    """Get formatted prompt template"""
-    if template_name in PROMPT_TEMPLATES:
-        return PROMPT_TEMPLATES[template_name].format(**context)
-    return PROMPT_TEMPLATES["comprehensive"].format(**context)
+            return fallback.generate_paths({'url': '', 'keywords': [], 'tech': []})
