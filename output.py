@@ -1,7 +1,3 @@
-"""
-Enhanced output formatting module with progress bars and multiple formats
-"""
-
 import json
 import csv
 import xml.etree.ElementTree as ET
@@ -12,204 +8,168 @@ import time
 from colorama import Fore, Style, Back
 import html
 from typing import Dict, List, Any
-from dataclasses import dataclass, asdict
-from enum import Enum
 
-class OutputFormat(Enum):
+class OutputFormat:
     JSON = "json"
     CSV = "csv"
     HTML = "html"
     XML = "xml"
-    TXT = "txt"
     MARKDOWN = "md"
 
-@dataclass
-class ScanResult:
-    """Data class for scan results"""
-    url: str
-    path: str
-    status_code: int
-    content_length: int
-    response_time: float
-    content_type: str = ""
-    title: str = ""
-    redirect_location: str = ""
-    discovered_at: str = ""
-    tags: List[str] = None
+class SimpleProgressBar:
+    """Clean, simple progress bar"""
     
-    def __post_init__(self):
-        if self.tags is None:
-            self.tags = []
-        if not self.discovered_at:
-            self.discovered_at = datetime.now().isoformat()
-
-class ProgressBar:
-    """Customizable progress bar"""
-    
-    def __init__(self, total, description="Progress", bar_length=50, 
-                 show_percentage=True, show_time=True):
+    def __init__(self, total, description="Scanning"):
         self.total = total
         self.description = description
-        self.bar_length = bar_length
-        self.show_percentage = show_percentage
-        self.show_time = show_time
         self.start_time = time.time()
         self.current = 0
-        self.last_update = 0
+        self.last_print = 0
         
     def update(self, current):
-        """Update progress bar"""
+        """Update progress"""
         self.current = current
         now = time.time()
         
-        # Throttle updates to avoid flickering
-        if now - self.last_update < 0.1 and current < self.total:
+        # Update every 0.5 seconds or at completion
+        if now - self.last_print < 0.5 and current < self.total:
             return
         
-        self.last_update = now
+        self.last_print = now
         self._render()
     
     def _render(self):
-        """Render progress bar"""
-        percent = self.current / self.total
-        filled_length = int(self.bar_length * percent)
+        """Render simple progress bar"""
+        percent = (self.current / self.total) * 100
+        bar_width = 30
+        filled = int(bar_width * self.current / self.total)
+        bar = '█' * filled + '░' * (bar_width - filled)
         
-        bar = '█' * filled_length + '░' * (self.bar_length - filled_length)
+        # Calculate ETA
+        elapsed = time.time() - self.start_time
+        if self.current > 0:
+            rate = self.current / elapsed
+            remaining = (self.total - self.current) / rate if rate > 0 else 0
+            eta = f"ETA: {self._format_time(remaining)}"
+        else:
+            eta = "ETA: calculating..."
         
-        # Build status string
-        status_parts = []
-        
-        if self.show_time:
-            elapsed = time.time() - self.start_time
-            if self.current > 0:
-                remaining = (elapsed / self.current) * (self.total - self.current)
-                status_parts.append(f"Time: {self._format_time(elapsed)}/{self._format_time(remaining)}")
-            else:
-                status_parts.append(f"Time: {self._format_time(elapsed)}")
-        
-        if self.show_percentage:
-            status_parts.append(f"{percent:.1%}")
-        
-        status_str = " | ".join(status_parts)
-        
-        # Print progress bar
-        sys.stdout.write(f"\r{Fore.CYAN}{self.description}:{Style.RESET_ALL} "
-                        f"{Fore.GREEN}[{bar}]{Style.RESET_ALL} "
-                        f"{self.current}/{self.total} "
-                        f"{status_str}")
+        # Clean single-line progress
+        sys.stdout.write(f"\r{Fore.CYAN}[{bar}]{Style.RESET_ALL} {percent:.0f}% | {self.current}/{self.total} | {eta}     ")
         sys.stdout.flush()
     
     def complete(self):
-        """Mark progress as complete"""
+        """Mark as complete"""
         self.update(self.total)
-        print()
+        print()  # New line after completion
     
     def _format_time(self, seconds):
-        """Format seconds into readable time"""
+        """Format time nicely"""
         if seconds < 60:
-            return f"{seconds:.1f}s"
+            return f"{seconds:.0f}s"
         elif seconds < 3600:
-            return f"{seconds/60:.1f}m"
+            return f"{seconds/60:.0f}m {seconds%60:.0f}s"
         else:
-            return f"{seconds/3600:.1f}h"
+            return f"{seconds/3600:.0f}h {(seconds%3600)/60:.0f}m"
 
 class OutputFormatter:
-    """Enhanced output formatter with multiple formats"""
+    """Beautiful, clean output formatter"""
     
-    def __init__(self, output_file=None, verbose=False, quiet=False, 
-                 format="json", show_progress=True):
+    def __init__(self, output_file=None, verbose=False, quiet=False, format="json"):
         self.output_file = output_file
         self.verbose = verbose
         self.quiet = quiet
-        self.format = OutputFormat(format)
-        self.show_progress = show_progress
+        self.format = format
         self.progress_bar = None
         self.scan_start = datetime.now()
         
-        # Results storage
-        self.results = {
-            'found': [],
-            'forbidden': [],
-            'redirects': [],
-            'errors': [],
-            'warnings': []
+        # Track findings
+        self.findings = {
+            'found': 0,
+            'forbidden': 0,
+            'redirects': 0,
+            'unauthorized': 0
         }
     
+    # ═══════════════════════════════════════
+    # SIMPLE STATUS MESSAGES
+    # ═══════════════════════════════════════
+    
     def status(self, msg):
-        """Print status message"""
+        """Blue info message"""
         if not self.quiet:
-            print(f"{Fore.BLUE}[*]{Style.RESET_ALL} {msg}")
+            print(f"{Fore.CYAN}▶{Style.RESET_ALL} {msg}")
     
     def success(self, msg):
-        """Print success message"""
+        """Green success message"""
         if not self.quiet:
-            print(f"{Fore.GREEN}[+]{Style.RESET_ALL} {msg}")
+            print(f"{Fore.GREEN}✓{Style.RESET_ALL} {msg}")
     
     def error(self, msg):
-        """Print error message"""
+        """Red error message"""
         if not self.quiet:
-            print(f"{Fore.RED}[-]{Style.RESET_ALL} {msg}")
+            print(f"{Fore.RED}✗{Style.RESET_ALL} {msg}")
     
     def warning(self, msg):
-        """Print warning message"""
+        """Yellow warning message"""
         if not self.quiet:
-            print(f"{Fore.YELLOW}[!]{Style.RESET_ALL} {msg}")
+            print(f"{Fore.YELLOW}⚠{Style.RESET_ALL} {msg}")
     
     def info(self, msg):
-        """Print info message"""
+        """Gray info message (verbose only)"""
         if self.verbose and not self.quiet:
-            print(f"{Fore.CYAN}[i]{Style.RESET_ALL} {msg}")
+            print(f"{Fore.WHITE}  {msg}{Style.RESET_ALL}")
+    
+    # ═══════════════════════════════════════
+    # CLEAN FINDING DISPLAY
+    # ═══════════════════════════════════════
     
     def found(self, path, status, size, response_time=0, content_type=""):
-        """Print found path with enhanced information"""
+        """Display found path - CLEAN & SIMPLE"""
         if self.quiet:
             return
         
-        # Determine color based on status code
+        # Don't show 404s
+        if status == 404:
+            return
+        
+        # Simple status indicators
         if status == 200:
-            color = Fore.GREEN
-            symbol = "[+]"
-            status_text = "FOUND"
-        elif status in [301, 302, 307, 308]:
-            color = Fore.YELLOW
-            symbol = "[→]"
-            status_text = "REDIRECT"
+            icon = f"{Fore.GREEN}✓{Style.RESET_ALL}"
+            self.findings['found'] += 1
         elif status == 403:
-            color = Fore.RED
-            symbol = "[✗]"
-            status_text = "FORBIDDEN"
+            icon = f"{Fore.RED}✗{Style.RESET_ALL}"
+            self.findings['forbidden'] += 1
         elif status == 401:
-            color = Fore.MAGENTA
-            symbol = "[🔐]"
-            status_text = "UNAUTHORIZED"
-        elif status == 404:
-            return  # Don't display 404s unless verbose
+            icon = f"{Fore.MAGENTA}🔒{Style.RESET_ALL}"
+            self.findings['unauthorized'] += 1
+        elif status in [301, 302]:
+            icon = f"{Fore.YELLOW}→{Style.RESET_ALL}"
+            self.findings['redirects'] += 1
         else:
-            color = Fore.WHITE
-            symbol = "[?]"
-            status_text = f"CODE {status}"
+            icon = "?"
         
-        # Format the output
-        size_str = f"{size:,} bytes".rjust(12)
-        time_str = f"{response_time:.2f}s".rjust(8) if response_time > 0 else ""
+        # Clean output format
+        size_kb = size / 1024
+        if size_kb < 1:
+            size_str = f"{size}B"
+        elif size_kb < 1024:
+            size_str = f"{size_kb:.1f}KB"
+        else:
+            size_str = f"{size_kb/1024:.1f}MB"
         
-        if content_type:
-            content_type = f" [{content_type[:20]}]"
-        
-        print(f"{color}{symbol}{Style.RESET_ALL} {path:50} "
-              f"{color}{status_text:12}{Style.RESET_ALL} "
-              f"{size_str}{time_str}{content_type}")
+        # Only show essentials
+        print(f"{icon} {path:45} [{status}] {size_str:>8}")
+    
+    # ═══════════════════════════════════════
+    # PROGRESS BAR
+    # ═══════════════════════════════════════
     
     def create_progress_bar(self, total, description="Scanning"):
-        """Create a progress bar"""
-        if self.show_progress and not self.quiet:
-            self.progress_bar = ProgressBar(
-                total=total,
-                description=description,
-                bar_length=40,
-                show_percentage=True,
-                show_time=True
-            )
+        """Create simple progress bar"""
+        if not self.quiet:
+            self.progress_bar = SimpleProgressBar(total, description)
+            print(f"\n{Fore.CYAN}Starting scan...{Style.RESET_ALL}")
     
     def update_progress(self, current):
         """Update progress bar"""
@@ -220,78 +180,81 @@ class OutputFormatter:
         """Complete progress bar"""
         if self.progress_bar:
             self.progress_bar.complete()
+            print()  # Extra spacing
+    
+    # ═══════════════════════════════════════
+    # BEAUTIFUL SUMMARY
+    # ═══════════════════════════════════════
     
     def summary(self, results):
-        """Print detailed summary"""
+        """Display beautiful summary"""
         if self.quiet:
             return
         
-        scan_duration = datetime.now() - self.scan_start
+        duration = (datetime.now() - self.scan_start).total_seconds()
         
-        print(f"\n{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}SCAN SUMMARY{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
+        # Header
+        print(f"\n{Fore.CYAN}{'═' * 60}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}{'SCAN COMPLETE':^60}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}{'═' * 60}{Style.RESET_ALL}\n")
         
-        # Results breakdown
-        print(f"{Fore.GREEN}✓ Found (200):{Style.RESET_ALL} {len(results['found'])}")
-        print(f"{Fore.YELLOW}→ Redirects:{Style.RESET_ALL} {len(results['redirects'])}")
-        print(f"{Fore.RED}✗ Forbidden (403):{Style.RESET_ALL} {len(results['forbidden'])}")
-        print(f"{Fore.MAGENTA}🔐 Unauthorized (401):{Style.RESET_ALL} {len([r for r in results['found'] if r.get('status') == 401])}")
+        # Results in a clean grid
+        found = len(results.get('found', []))
+        forbidden = len(results.get('forbidden', []))
+        redirects = len(results.get('redirects', []))
+        unauthorized = len(results.get('unauthorized', []))
         
-        # Statistics
-        total_tested = sum(len(v) for v in results.values() if isinstance(v, list))
-        success_rate = (len(results['found']) / total_tested * 100) if total_tested > 0 else 0
+        print(f"  {Fore.GREEN}✓ Found (200):{Style.RESET_ALL}        {found:>4}")
+        print(f"  {Fore.YELLOW}→ Redirects:{Style.RESET_ALL}          {redirects:>4}")
+        print(f"  {Fore.RED}✗ Forbidden (403):{Style.RESET_ALL}    {forbidden:>4}")
+        print(f"  {Fore.MAGENTA}🔒 Unauthorized (401):{Style.RESET_ALL} {unauthorized:>4}")
         
-        print(f"\n{Fore.CYAN}Statistics:{Style.RESET_ALL}")
-        print(f"  Total paths tested: {total_tested}")
-        print(f"  Success rate: {success_rate:.1f}%")
-        print(f"  Scan duration: {scan_duration.total_seconds():.1f} seconds")
+        print(f"\n  {Fore.WHITE}⏱ Duration:{Style.RESET_ALL}           {duration:.1f}s")
+        print(f"  {Fore.WHITE}📊 Total Tested:{Style.RESET_ALL}       {sum([found, forbidden, redirects, unauthorized])}")
         
-        # Top findings
-        if results['found']:
+        # Top 5 findings (if any)
+        if found > 0:
             print(f"\n{Fore.CYAN}Top Findings:{Style.RESET_ALL}")
-            for result in sorted(results['found'], key=lambda x: x.get('size', 0), reverse=True)[:5]:
-                path = result.get('path', '')
-                status = result.get('status', 0)
+            top_results = sorted(results['found'], key=lambda x: x.get('size', 0), reverse=True)[:5]
+            for i, result in enumerate(top_results, 1):
+                path = result.get('path', '')[:40]
                 size = result.get('size', 0)
-                print(f"  {path:40} {status} ({size:,} bytes)")
+                print(f"  {i}. {path:40} ({size:,} bytes)")
         
-        print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
+        print(f"\n{Fore.CYAN}{'═' * 60}{Style.RESET_ALL}\n")
     
-    def save_results(self, results, format_override=None):
-        """Save results in specified format"""
+    # ═══════════════════════════════════════
+    # SAVE RESULTS (Unchanged - works well)
+    # ═══════════════════════════════════════
+    
+    def save_results(self, results):
+        """Save results to file"""
         if not self.output_file:
             return
         
-        format_to_use = format_override or self.format
-        
         try:
-            if format_to_use == OutputFormat.JSON:
+            if self.format == "json":
                 self._save_json(results)
-            elif format_to_use == OutputFormat.CSV:
+            elif self.format == "csv":
                 self._save_csv(results)
-            elif format_to_use == OutputFormat.HTML:
+            elif self.format == "html":
                 self._save_html(results)
-            elif format_to_use == OutputFormat.XML:
+            elif self.format == "xml":
                 self._save_xml(results)
-            elif format_to_use == OutputFormat.MARKDOWN:
+            elif self.format == "md":
                 self._save_markdown(results)
-            else:
-                self._save_text(results)
             
-            self.success(f"Results saved to {self.output_file}")
-            
+            self.success(f"Results saved: {self.output_file}")
         except Exception as e:
-            self.error(f"Failed to save results: {str(e)}")
+            self.error(f"Save failed: {str(e)}")
     
     def _save_json(self, results):
-        """Save results as JSON"""
+        """Save as JSON"""
         output_data = {
             'metadata': {
                 'tool': 'AIBuster',
                 'version': '2.0.0',
                 'timestamp': datetime.now().isoformat(),
-                'url': results.get('target_url', ''),
                 'duration': (datetime.now() - self.scan_start).total_seconds()
             },
             'results': results
@@ -301,113 +264,178 @@ class OutputFormatter:
             json.dump(output_data, f, indent=2, default=str)
     
     def _save_csv(self, results):
-        """Save results as CSV"""
+        """Save as CSV"""
         with open(self.output_file, 'w', newline='') as f:
             writer = csv.writer(f)
+            writer.writerow(['Path', 'Status', 'Size', 'Content-Type', 'URL'])
             
-            # Write header
-            writer.writerow(['Path', 'Status', 'Size', 'Content-Type', 'URL', 'Discovered'])
-            
-            # Write all found paths
-            for category in ['found', 'redirects', 'forbidden']:
+            for category in ['found', 'redirects', 'forbidden', 'unauthorized']:
                 for item in results.get(category, []):
                     writer.writerow([
                         item.get('path', ''),
                         item.get('status', ''),
                         item.get('size', ''),
                         item.get('content_type', ''),
-                        item.get('url', ''),
-                        datetime.now().isoformat()
+                        item.get('url', '')
                     ])
     
     def _save_html(self, results):
-        """Save results as HTML report"""
+        """Save beautiful HTML report"""
         html_content = f"""<!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
     <title>AIBuster Scan Report</title>
     <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
-        .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
-        h1 {{ color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }}
-        .summary {{ background: #e8f5e9; padding: 15px; border-radius: 5px; margin: 20px 0; }}
-        .result {{ padding: 10px; border-left: 4px solid #4CAF50; margin: 5px 0; background: #f9f9f9; }}
-        .status-200 {{ border-color: #4CAF50; }}
-        .status-301 {{ border-color: #FFC107; }}
-        .status-302 {{ border-color: #FFC107; }}
-        .status-403 {{ border-color: #F44336; }}
-        .status-401 {{ border-color: #9C27B0; }}
-        .metadata {{ color: #666; font-size: 0.9em; }}
-        .path {{ font-weight: bold; font-family: monospace; }}
-        .badge {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.8em; color: white; margin-right: 5px; }}
-        .badge-success {{ background: #4CAF50; }}
-        .badge-warning {{ background: #FFC107; }}
-        .badge-danger {{ background: #F44336; }}
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+        }}
+        .container {{ 
+            max-width: 1200px; 
+            margin: 0 auto; 
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }}
+        .header {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }}
+        .header h1 {{ font-size: 2.5em; margin-bottom: 10px; }}
+        .header p {{ opacity: 0.9; }}
+        
+        .stats {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            padding: 30px;
+            background: #f8f9fa;
+        }}
+        .stat-card {{
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }}
+        .stat-card .number {{
+            font-size: 2.5em;
+            font-weight: bold;
+            margin: 10px 0;
+        }}
+        .stat-card .label {{ color: #666; }}
+        .success .number {{ color: #28a745; }}
+        .warning .number {{ color: #ffc107; }}
+        .danger .number {{ color: #dc3545; }}
+        .info .number {{ color: #17a2b8; }}
+        
+        .results {{
+            padding: 30px;
+        }}
+        .result-item {{
+            background: #f8f9fa;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }}
+        .result-item.success {{ border-left-color: #28a745; }}
+        .result-item.danger {{ border-left-color: #dc3545; }}
+        .result-item.warning {{ border-left-color: #ffc107; }}
+        
+        .path {{ 
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            font-size: 1.1em;
+        }}
+        .meta {{ 
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🔍 AIBuster Scan Report</h1>
-        
-        <div class="metadata">
-            <p><strong>Target URL:</strong> {results.get('target_url', 'N/A')}</p>
-            <p><strong>Scan Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-            <p><strong>Duration:</strong> {(datetime.now() - self.scan_start).total_seconds():.1f} seconds</p>
+        <div class="header">
+            <h1>🔍 AIBuster Scan Report</h1>
+            <p>Security Assessment Results</p>
+            <p style="margin-top: 10px; font-size: 0.9em;">
+                {datetime.now().strftime('%B %d, %Y at %H:%M:%S')}
+            </p>
         </div>
         
-        <div class="summary">
-            <h3>📊 Summary</h3>
-            <p>Found (200): <span class="badge badge-success">{len(results.get('found', []))}</span></p>
-            <p>Redirects: <span class="badge badge-warning">{len(results.get('redirects', []))}</span></p>
-            <p>Forbidden (403): <span class="badge badge-danger">{len(results.get('forbidden', []))}</span></p>
+        <div class="stats">
+            <div class="stat-card success">
+                <div class="label">Found</div>
+                <div class="number">{len(results.get('found', []))}</div>
+            </div>
+            <div class="stat-card warning">
+                <div class="label">Redirects</div>
+                <div class="number">{len(results.get('redirects', []))}</div>
+            </div>
+            <div class="stat-card danger">
+                <div class="label">Forbidden</div>
+                <div class="number">{len(results.get('forbidden', []))}</div>
+            </div>
+            <div class="stat-card info">
+                <div class="label">Duration</div>
+                <div class="number">{(datetime.now() - self.scan_start).total_seconds():.1f}s</div>
+            </div>
         </div>
         
-        <h3>📄 Results</h3>"""
+        <div class="results">
+            <h2>📄 Detailed Results</h2>
+"""
         
-        # Add results
-        for category, items in results.items():
-            if isinstance(items, list) and items:
-                html_content += f"<h4>{category.title()}</h4>"
-                for item in items:
-                    status = item.get('status', 0)
+        # Add findings
+        for category in ['found', 'redirects', 'forbidden']:
+            items = results.get(category, [])
+            if items:
+                css_class = 'success' if category == 'found' else ('warning' if category == 'redirects' else 'danger')
+                html_content += f"<h3>{category.title()} ({len(items)})</h3>"
+                for item in items[:20]:  # Limit to 20 per category
+                    path = html.escape(item.get('path', ''))
+                    status = item.get('status', '')
+                    size = item.get('size', 0)
                     html_content += f"""
-                    <div class="result status-{status}">
-                        <div class="path">{html.escape(item.get('path', ''))}</div>
-                        <div>Status: <strong>{status}</strong> | Size: {item.get('size', 0):,} bytes</div>
-                        <div>URL: {html.escape(item.get('url', ''))}</div>
-                    </div>"""
+                    <div class="result-item {css_class}">
+                        <div class="path">{path}</div>
+                        <div class="meta">Status: {status} | Size: {size:,} bytes</div>
+                    </div>
+                    """
         
         html_content += """
+        </div>
     </div>
 </body>
-</html>"""
+</html>
+"""
         
-        with open(self.output_file, 'w') as f:
+        with open(self.output_file, 'w', encoding='utf-8') as f:
             f.write(html_content)
     
     def _save_xml(self, results):
-        """Save results as XML"""
+        """Save as XML"""
         root = ET.Element("aibuster_scan")
-        
-        # Metadata
         metadata = ET.SubElement(root, "metadata")
-        ET.SubElement(metadata, "tool").text = "AIBuster"
-        ET.SubElement(metadata, "version").text = "2.0.0"
         ET.SubElement(metadata, "timestamp").text = datetime.now().isoformat()
-        ET.SubElement(metadata, "target_url").text = results.get('target_url', '')
         
-        # Results
         results_elem = ET.SubElement(root, "results")
-        
         for category, items in results.items():
             if isinstance(items, list):
-                category_elem = ET.SubElement(results_elem, category)
+                cat_elem = ET.SubElement(results_elem, category)
                 for item in items:
-                    item_elem = ET.SubElement(category_elem, "item")
+                    item_elem = ET.SubElement(cat_elem, "item")
                     for key, value in item.items():
                         ET.SubElement(item_elem, key).text = str(value)
         
-        # Pretty print XML
         xml_str = ET.tostring(root, encoding='unicode')
         xml_pretty = minidom.parseString(xml_str).toprettyxml(indent="  ")
         
@@ -415,79 +443,34 @@ class OutputFormatter:
             f.write(xml_pretty)
     
     def _save_markdown(self, results):
-        """Save results as Markdown"""
-        md_content = f"""# AIBuster Scan Report
+        """Save as Markdown"""
+        md = f"""# AIBuster Scan Report
 
-## Metadata
-- **Target URL:** {results.get('target_url', 'N/A')}
-- **Scan Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-- **Duration:** {(datetime.now() - self.scan_start).total_seconds():.1f} seconds
+**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
+**Duration:** {(datetime.now() - self.scan_start).total_seconds():.1f}s
 
 ## Summary
+
 | Category | Count |
 |----------|-------|
-| Found (200) | {len(results.get('found', []))} |
-| Redirects | {len(results.get('redirects', []))} |
-| Forbidden (403) | {len(results.get('forbidden', []))} |
+| ✓ Found | {len(results.get('found', []))} |
+| → Redirects | {len(results.get('redirects', []))} |
+| ✗ Forbidden | {len(results.get('forbidden', []))} |
 
 ## Results\n"""
         
-        for category, items in results.items():
-            if isinstance(items, list) and items:
-                md_content += f"\n### {category.title()}\n\n"
-                md_content += "| Path | Status | Size | URL |\n"
-                md_content += "|------|--------|------|-----|\n"
-                
+        for category in ['found', 'redirects', 'forbidden']:
+            items = results.get(category, [])
+            if items:
+                md += f"\n### {category.title()}\n\n"
                 for item in items:
-                    path = item.get('path', '').replace('|', '\\|')
-                    url = item.get('url', '').replace('|', '\\|')
-                    md_content += f"| `{path}` | {item.get('status', '')} | {item.get('size', 0):,} | {url} |\n"
+                    path = item.get('path', '')
+                    status = item.get('status', '')
+                    md += f"- `{path}` - Status: {status}\n"
         
         with open(self.output_file, 'w') as f:
-            f.write(md_content)
+            f.write(md)
     
-    def _save_text(self, results):
-        """Save results as plain text"""
-        with open(self.output_file, 'w') as f:
-            f.write(f"AIBuster Scan Report\n")
-            f.write(f"{'='*50}\n\n")
-            f.write(f"Target: {results.get('target_url', '')}\n")
-            f.write(f"Date: {datetime.now()}\n\n")
-            
-            f.write("Results:\n")
-            f.write("-"*50 + "\n")
-            
-            for category, items in results.items():
-                if isinstance(items, list) and items:
-                    f.write(f"\n{category.upper()}:\n")
-                    for item in items:
-                        f.write(f"  {item.get('path', '')} - Status: {item.get('status', '')} "
-                               f"- Size: {item.get('size', 0):,}\n")
-
     def generate_report(self, results, format_override=None):
-        """Generate comprehensive report"""
-        if not self.output_file:
-            return
-        
-        # Determine filename based on format
-        format_to_use = format_override or self.format
-        base_name = self.output_file.rsplit('.', 1)[0] if '.' in self.output_file else self.output_file
-        
-        if format_to_use == OutputFormat.JSON:
-            filename = f"{base_name}.json"
-        elif format_to_use == OutputFormat.CSV:
-            filename = f"{base_name}.csv"
-        elif format_to_use == OutputFormat.HTML:
-            filename = f"{base_name}.html"
-        elif format_to_use == OutputFormat.XML:
-            filename = f"{base_name}.xml"
-        elif format_to_use == OutputFormat.MARKDOWN:
-            filename = f"{base_name}.md"
-        else:
-            filename = f"{base_name}.txt"
-        
-        # Save with new filename
-        original_output = self.output_file
-        self.output_file = filename
-        self.save_results(results, format_to_use)
-        self.output_file = original_output
+        """Generate report in specified format"""
+        self.save_results(results)

@@ -52,3 +52,24 @@ chmod +x aibuster.py
 
 # Install system-wide
 sudo ln -s $(pwd)/aibuster.py /usr/bin/aibuster
+
+## API Key Setup
+
+AIBuster uses an LLM to intelligently generate directory paths.
+
+1. Obtain an API key from your provider
+2. Export it as an environment variable:
+
+```bash
+# For Claude (Anthropic)
+export ANTHROPIC_API_KEY="your-api-key-here"
+
+# For OpenAI
+export OPENAI_API_KEY="your-api-key-here"
+
+# Make it permanent (add to ~/.bashrc or ~/.zshrc)
+echo 'export ANTHROPIC_API_KEY="your-api-key-here"' >> ~/.bashrc
+source ~/.bashrc
+
+# OR Pass API key via command line
+./aibuster.py -u https://tesla.com --ai-model claude --api-key "your-api-key-here"
