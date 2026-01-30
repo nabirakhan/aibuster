@@ -4,8 +4,8 @@ import sys
 import signal
 import os
 from colorama import Fore, Style, init
-from recon import WebRecon
-from ai import AIPathGenerator
+from ai import EnhancedAIPathGenerator
+from recon import AdvancedWebRecon
 from buster import PathBuster
 from output import OutputFormatter
 try:
