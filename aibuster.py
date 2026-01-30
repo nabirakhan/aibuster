@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AIBuster - AI-Powered Directory Buster
-Enhanced version with progress bars, better error handling, and more features
+Professional Edition with Enhanced Output
 """
 
 import argparse
@@ -20,14 +20,13 @@ try:
     PLUGINS_AVAILABLE = True
 except ImportError:
     PLUGINS_AVAILABLE = False
-    print(f"{Fore.YELLOW}[!] Plugins not available - continuing without plugin support{Style.RESET_ALL}")
 
 import logging
 
 # Initialize colorama
 init(autoreset=True)
 
-VERSION = "2.0.0"
+VERSION = "2.5.0"
 
 def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully"""
@@ -35,17 +34,37 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 def banner():
-    """Display enhanced banner"""
-    print(f"""
-{Fore.CYAN}╔═══════════════════════════════════════════════╗
-║         AIBuster v{VERSION} - Enhanced           ║
-║   AI-Powered Intelligent Directory Buster      ║
-║        with Progress Tracking & Plugins        ║
-╚═══════════════════════════════════════════════╝{Style.RESET_ALL}
-""")
+    """Display professional ASCII banner"""
+    banner_text = f"""{Fore.CYAN}
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                                                                               ║
+║     █████╗ ██╗██████╗ ██╗   ██╗███████╗████████╗███████╗██████╗              ║
+║    ██╔══██╗██║██╔══██╗██║   ██║██╔════╝╚══██╔══╝██╔════╝██╔══██╗             ║
+║    ███████║██║██████╔╝██║   ██║███████╗   ██║   █████╗  ██████╔╝             ║
+║    ██╔══██║██║██╔══██╗██║   ██║╚════██║   ██║   ██╔══╝  ██╔══██╗             ║
+║    ██║  ██║██║██████╔╝╚██████╔╝███████║   ██║   ███████╗██║  ██║             ║
+║    ╚═╝  ╚═╝╚═╝╚═════╝  ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝             ║
+║                                                                               ║
+║              AI-Powered Intelligent Directory Enumeration Tool                ║
+║                   Advanced Recon • Neural Analysis • Context-Aware            ║
+║                                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+{Fore.WHITE}═══════════════════════════════════════════════════════════════════════════════
+                             » SYSTEM STATUS «                                
+═══════════════════════════════════════════════════════════════════════════════
+
+{Fore.YELLOW}  VERSION:{Style.RESET_ALL}        v{VERSION}
+{Fore.YELLOW}  NEURAL ENGINE:{Style.RESET_ALL} SPECTER (AUTOMATED)
+{Fore.YELLOW}  SCAN MODE:{Style.RESET_ALL}     ACTIVE RECONNAISSANCE
+{Fore.YELLOW}  AUTHOR:{Style.RESET_ALL}        Security Research Team
+
+{Fore.WHITE}═══════════════════════════════════════════════════════════════════════════════{Style.RESET_ALL}
+"""
+    print(banner_text)
 
 def parse_args():
-    """Parse enhanced command line arguments"""
+    """Parse command line arguments"""
     parser = argparse.ArgumentParser(
         description="AIBuster - AI-powered directory enumeration",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -53,8 +72,8 @@ def parse_args():
 Examples:
   %(prog)s -u https://example.com
   %(prog)s -u https://target.com -t 20 -v -o results.json
-  %(prog)s -u https://target.com --ai-model local --format html
-  %(prog)s -u https://target.com --plugins wordpress,api-scanner
+  %(prog)s -u https://target.com --ai-model claude --format html
+  %(prog)s -u https://target.com --plugins wordpress,sensitive-files,api-scanner
 """
     )
     
@@ -86,7 +105,7 @@ Examples:
     parser.add_argument("--quiet", action="store_true", help="Minimal output (only results)")
     
     # Advanced features
-    parser.add_argument("--plugins", help="Enable plugins (comma-separated)")
+    parser.add_argument("--plugins", help="Enable plugins (comma-separated: wordpress,api-scanner,sensitive-files)")
     parser.add_argument("--proxy", help="Use proxy (format: http://proxy:port)")
     parser.add_argument("--rate-limit", type=int, help="Maximum requests per minute")
     parser.add_argument("--cookies", help="Cookies to send with requests")
@@ -180,34 +199,30 @@ def main():
     output = OutputFormatter(args.output, args.verbose, args.quiet, args.format)
     
     try:
-        output.status("Starting AIBuster scan...")
+        output.system_status("INITIATING SYSTEM SCAN", "boot_sequence")
         logger.info(f"Starting scan for {args.url}")
         
         # Initialize plugin manager if requested
         plugin_manager = None
         if args.plugins and PLUGINS_AVAILABLE:
-            output.status("Loading plugins...")
+            output.system_status("LOADING NEURAL MODULES", "plugin_init")
             plugin_manager = PluginManager(args.plugins.split(','), args)
             plugin_manager.load_plugins()
         elif args.plugins and not PLUGINS_AVAILABLE:
             output.warning("Plugins requested but not available. Install plugins.py to use this feature.")
         
         # Step 1: Reconnaissance
-        output.status("Performing reconnaissance...")
+        output.system_status("PERFORMING RECONNAISSANCE", "recon_start")
         recon = WebRecon(args.url, args.timeout, args.user_agent, args.proxy, args.cookies)
         recon_data = recon.analyze()
         
         if args.verbose:
-            output.info(f"Reconnaissance completed:")
-            output.info(f"  - Links found: {len(recon_data.get('links', []))}")
-            output.info(f"  - Scripts found: {len(recon_data.get('scripts', []))}")
-            output.info(f"  - Technologies: {', '.join(recon_data.get('tech', []))}")
-            output.info(f"  - Keywords extracted: {len(recon_data.get('keywords', []))}")
+            output.recon_summary(recon_data)
         
         # Step 2: Generate paths
         paths = []
         if args.wordlist:
-            output.status(f"Loading wordlist: {args.wordlist}")
+            output.system_status(f"LOADING WORDLIST: {args.wordlist}", "wordlist_load")
             try:
                 with open(args.wordlist, 'r') as f:
                     paths = [line.strip() for line in f if line.strip() and not line.startswith('#')]
@@ -216,19 +231,19 @@ def main():
                 output.error(f"Wordlist not found: {args.wordlist}")
                 sys.exit(1)
         elif not args.no_ai:
-            output.status(f"Generating AI-powered paths using {args.ai_model}...")
+            output.system_status(f"GENERATING AI PATHS - MODEL: {args.ai_model.upper()}", "ai_generation")
             ai_gen = AIPathGenerator(model=args.ai_model, api_key=args.api_key)
             paths = ai_gen.generate_paths(recon_data, depth=args.depth)
             output.success(f"Generated {len(paths)} intelligent paths")
         else:
-            output.status("Using built-in path database...")
+            output.system_status("USING BUILT-IN PATH DATABASE", "builtin_paths")
             paths = get_builtin_paths(recon_data)
         
         # Add extensions if specified
         if args.extensions and not args.wordlist:
             paths_with_ext = []
             for path in paths:
-                if '.' not in path.split('/')[-1]:  # Only add extensions to files without existing extensions
+                if '.' not in path.split('/')[-1]:
                     for ext in args.extensions.split(','):
                         paths_with_ext.append(f"{path}.{ext.strip()}")
             paths.extend(paths_with_ext)
@@ -239,7 +254,7 @@ def main():
         output.info(f"Total unique paths to test: {len(paths)}")
         
         # Step 3: Bust directories
-        output.status(f"Testing {len(paths)} paths with {args.threads} threads...")
+        output.system_status(f"INITIATING PATH ENUMERATION - THREADS: {args.threads}", "scan_start")
         buster = PathBuster(
             args.url, 
             args.threads, 
@@ -258,7 +273,7 @@ def main():
         
         # Step 4: Run plugins if enabled
         if plugin_manager:
-            output.status("Running plugins...")
+            output.system_status("EXECUTING NEURAL MODULES", "plugin_run")
             plugin_results = plugin_manager.run_plugins(recon_data, results['results'])
             results['results']['plugin_results'] = plugin_results
         
