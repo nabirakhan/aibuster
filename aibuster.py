@@ -32,27 +32,49 @@ def banner():
         "   ╚═╝  ╚═╝╚═╝╚═════╝  ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝"
     ]
     colors = [Fore.CYAN, Fore.BLUE, Fore.MAGENTA, Fore.RED, Fore.MAGENTA, Fore.BLUE]
-    print(f"{Fore.CYAN}╔═════════════════════════════════════════════════════════════════════════╗")
-    print(f"{Fore.CYAN}║                                                                         ║")
+    box_width = 81
+    top_border = "═" * (box_width - 2)
+    bottom_border = "═" * (box_width - 2)
+    
+    print(f"{Fore.CYAN}╔{top_border}╗")
+    print(f"{Fore.CYAN}║{' ' * (box_width - 2)}║")
+    
     for i, line in enumerate(lines):
         color = colors[i % len(colors)]
-        print(f"{Fore.CYAN}║{color}{line}{Fore.CYAN} ║")
-    print(f"{Fore.CYAN}║                                                                         ║")
-    print(f"{Fore.CYAN}║        AI-Powered Intelligent Directory Enumeration Tool                ║")
-    print(f"{Fore.CYAN}║           Advanced Recon • Neural Analysis • Context-Aware              ║")
-    print(f"{Fore.CYAN}║                                                                         ║")
-    print(f"{Fore.CYAN}╚═════════════════════════════════════════════════════════════════════════╝")
+        line_len = len(line)
+        left_padding = (box_width - 2 - line_len) // 2
+        right_padding = box_width - 2 - line_len - left_padding
+        
+        print(f"{Fore.CYAN}║{' ' * left_padding}{color}{line}{' ' * right_padding}{Fore.CYAN}║")
+    
+    print(f"{Fore.CYAN}║{' ' * (box_width - 2)}║")
+    title1 = "AI-Powered Intelligent Directory Enumeration Tool"
+    title2 = "Advanced Recon • Neural Analysis • Context-Aware"
+    
+    title1_left = (box_width - 2 - len(title1)) // 2
+    title1_right = box_width - 2 - len(title1) - title1_left
+    
+    title2_left = (box_width - 2 - len(title2)) // 2
+    title2_right = box_width - 2 - len(title2) - title2_left
+    
+    print(f"{Fore.CYAN}║{' ' * title1_left}{title1}{' ' * title1_right}{Fore.CYAN}║")
+    print(f"{Fore.CYAN}║{' ' * title2_left}{title2}{' ' * title2_right}{Fore.CYAN}║")
+    
+    print(f"{Fore.CYAN}║{' ' * (box_width - 2)}║")
+    print(f"{Fore.CYAN}╚{bottom_border}╝")
+    status_border = "═" * (box_width - 2)
+    
     print(f"""
-{Fore.WHITE}═════════════════════════════════════════════════════════════════════════
+{Fore.WHITE}{status_border}
                          » SYSTEM STATUS «                                
-═════════════════════════════════════════════════════════════════════════
+{status_border}
 
 {Fore.YELLOW}  VERSION:{Style.RESET_ALL}        v{VERSION}
 {Fore.YELLOW}  NEURAL ENGINE:{Style.RESET_ALL} SPECTER (AUTOMATED)
 {Fore.YELLOW}  SCAN MODE:{Style.RESET_ALL}     ACTIVE RECONNAISSANCE
 {Fore.YELLOW}  AUTHOR:{Style.RESET_ALL}        Nabira Khan
 
-{Fore.WHITE}═════════════════════════════════════════════════════════════════════════{Style.RESET_ALL}
+{Fore.WHITE}{status_border}{Style.RESET_ALL}
 """)
 
 def parse_args():
