@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-AIBuster - AI-Powered Directory Buster
-Professional Edition with Enhanced Output
-"""
-
 import argparse
 import sys
 import signal
@@ -13,161 +8,116 @@ from recon import WebRecon
 from ai import AIPathGenerator
 from buster import PathBuster
 from output import OutputFormatter
-
-# Try to import plugins, make it optional
 try:
     from plugins import PluginManager
     PLUGINS_AVAILABLE = True
 except ImportError:
     PLUGINS_AVAILABLE = False
-
 import logging
 
-# Initialize colorama
 init(autoreset=True)
-
 VERSION = "2.5.0"
 
 def signal_handler(sig, frame):
-    """Handle Ctrl+C gracefully"""
     print(f"\n{Fore.YELLOW}[!] Scan interrupted by user{Style.RESET_ALL}")
     sys.exit(0)
 
 def banner():
-    """Display professional ASCII banner"""
-    banner_text = f"""{Fore.CYAN}
-╔═══════════════════════════════════════════════════════════════════════════════╗
-║                                                                               ║
-║     █████╗ ██╗██████╗ ██╗   ██╗███████╗████████╗███████╗██████╗              ║
-║    ██╔══██╗██║██╔══██╗██║   ██║██╔════╝╚══██╔══╝██╔════╝██╔══██╗             ║
-║    ███████║██║██████╔╝██║   ██║███████╗   ██║   █████╗  ██████╔╝             ║
-║    ██╔══██║██║██╔══██╗██║   ██║╚════██║   ██║   ██╔══╝  ██╔══██╗             ║
-║    ██║  ██║██║██████╔╝╚██████╔╝███████║   ██║   ███████╗██║  ██║             ║
-║    ╚═╝  ╚═╝╚═╝╚═════╝  ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝             ║
-║                                                                               ║
-║              AI-Powered Intelligent Directory Enumeration Tool                ║
-║                   Advanced Recon • Neural Analysis • Context-Aware            ║
-║                                                                               ║
-╚═══════════════════════════════════════════════════════════════════════════════╝
-
-{Fore.WHITE}═══════════════════════════════════════════════════════════════════════════════
-                             » SYSTEM STATUS «                                
-═══════════════════════════════════════════════════════════════════════════════
+    lines = [
+        "    █████╗ ██╗██████╗ ██╗   ██╗███████╗████████╗███████╗██████╗ ",
+        "   ██╔══██╗██║██╔══██╗██║   ██║██╔════╝╚══██╔══╝██╔════╝██╔══██╗",
+        "   ███████║██║██████╔╝██║   ██║███████╗   ██║   █████╗  ██████╔╝",
+        "   ██╔══██║██║██╔══██╗██║   ██║╚════██║   ██║   ██╔══╝  ██╔══██╗",
+        "   ██║  ██║██║██████╔╝╚██████╔╝███████║   ██║   ███████╗██║  ██║",
+        "   ╚═╝  ╚═╝╚═╝╚═════╝  ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝"
+    ]
+    colors = [Fore.CYAN, Fore.BLUE, Fore.MAGENTA, Fore.RED, Fore.MAGENTA, Fore.BLUE]
+    print(f"{Fore.CYAN}╔═════════════════════════════════════════════════════════════════════════╗")
+    print(f"{Fore.CYAN}║                                                                         ║")
+    for i, line in enumerate(lines):
+        color = colors[i % len(colors)]
+        print(f"{Fore.CYAN}║{color}{line}{Fore.CYAN} ║")
+    print(f"{Fore.CYAN}║                                                                         ║")
+    print(f"{Fore.CYAN}║        AI-Powered Intelligent Directory Enumeration Tool                ║")
+    print(f"{Fore.CYAN}║           Advanced Recon • Neural Analysis • Context-Aware              ║")
+    print(f"{Fore.CYAN}║                                                                         ║")
+    print(f"{Fore.CYAN}╚═════════════════════════════════════════════════════════════════════════╝")
+    print(f"""
+{Fore.WHITE}═════════════════════════════════════════════════════════════════════════
+                         » SYSTEM STATUS «                                
+═════════════════════════════════════════════════════════════════════════
 
 {Fore.YELLOW}  VERSION:{Style.RESET_ALL}        v{VERSION}
 {Fore.YELLOW}  NEURAL ENGINE:{Style.RESET_ALL} SPECTER (AUTOMATED)
 {Fore.YELLOW}  SCAN MODE:{Style.RESET_ALL}     ACTIVE RECONNAISSANCE
-{Fore.YELLOW}  AUTHOR:{Style.RESET_ALL}        Security Research Team
+{Fore.YELLOW}  AUTHOR:{Style.RESET_ALL}        Nabira Khan
 
-{Fore.WHITE}═══════════════════════════════════════════════════════════════════════════════{Style.RESET_ALL}
-"""
-    print(banner_text)
+{Fore.WHITE}═════════════════════════════════════════════════════════════════════════{Style.RESET_ALL}
+""")
 
 def parse_args():
-    """Parse command line arguments"""
     parser = argparse.ArgumentParser(
         description="AIBuster - AI-powered directory enumeration",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
+        epilog="""Examples:
   %(prog)s -u https://example.com
   %(prog)s -u https://target.com -t 20 -v -o results.json
   %(prog)s -u https://target.com --ai-model claude --format html
-  %(prog)s -u https://target.com --plugins wordpress,sensitive-files,api-scanner
-"""
+  %(prog)s -u https://target.com --plugins wordpress,sensitive-files,api-scanner,shopify"""
     )
-    
-    # Required arguments
     parser.add_argument("-u", "--url", required=True, help="Target URL")
-    
-    # Performance arguments
     parser.add_argument("-t", "--threads", type=int, default=10, help="Number of threads (default: 10)")
     parser.add_argument("--timeout", type=int, default=5, help="Request timeout in seconds (default: 5)")
     parser.add_argument("--delay", type=float, default=0, help="Delay between requests in seconds")
     parser.add_argument("--retries", type=int, default=2, help="Number of retries for failed requests")
-    
-    # AI and path generation
     parser.add_argument("--no-ai", action="store_true", help="Disable AI path generation")
-    parser.add_argument("--ai-model", default="local", choices=["claude", "openai", "local"], 
-                       help="AI model to use (default: local)")
+    parser.add_argument("--ai-model", default="local", choices=["claude", "openai", "local"], help="AI model to use (default: local)")
     parser.add_argument("--api-key", help="API key for AI services (Claude/OpenAI)")
     parser.add_argument("--wordlist", help="Use custom wordlist instead of AI")
-    parser.add_argument("--extensions", default="php,html,js,txt,json", 
-                       help="File extensions to test (comma-separated)")
+    parser.add_argument("--extensions", default="php,html,js,txt,json", help="File extensions to test (comma-separated)")
     parser.add_argument("--depth", type=int, default=1, help="Directory depth to scan (1-3)")
-    
-    # Output and reporting
     parser.add_argument("-o", "--output", help="Save results to file")
-    parser.add_argument("--format", default="json", choices=["json", "csv", "html", "xml", "md"], 
-                       help="Output format (default: json)")
+    parser.add_argument("--format", default="json", choices=["json", "csv", "html", "xml", "md"], help="Output format (default: json)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     parser.add_argument("--debug", action="store_true", help="Debug mode with detailed logging")
     parser.add_argument("--quiet", action="store_true", help="Minimal output (only results)")
-    
-    # Advanced features
-    parser.add_argument("--plugins", help="Enable plugins (comma-separated: wordpress,api-scanner,sensitive-files)")
+    parser.add_argument("--plugins", help="Enable plugins (comma-separated: wordpress,api-scanner,sensitive-files,shopify)")
     parser.add_argument("--proxy", help="Use proxy (format: http://proxy:port)")
     parser.add_argument("--rate-limit", type=int, help="Maximum requests per minute")
     parser.add_argument("--cookies", help="Cookies to send with requests")
     parser.add_argument("--headers", help="Custom headers (JSON string)")
-    parser.add_argument("--user-agent", default="Mozilla/5.0 (AIBuster-Scanner)", 
-                       help="Custom User-Agent string")
-    
+    parser.add_argument("--user-agent", default="Mozilla/5.0 (AIBuster-Scanner)", help="Custom User-Agent string")
     return parser.parse_args()
 
 def setup_logging(args):
-    """Configure logging based on verbosity"""
     level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(
         level=level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('aibuster.log'),
-            logging.StreamHandler() if not args.quiet else logging.NullHandler()
-        ]
+        handlers=[logging.FileHandler('aibuster.log'), logging.StreamHandler() if not args.quiet else logging.NullHandler()]
     )
     return logging.getLogger(__name__)
 
 def validate_args(args):
-    """Validate command line arguments"""
     if not args.url.startswith(('http://', 'https://')):
         raise ValueError("URL must start with http:// or https://")
-    
     if args.threads < 1 or args.threads > 100:
         raise ValueError("Threads must be between 1 and 100")
-    
     if args.depth < 1 or args.depth > 3:
         raise ValueError("Depth must be between 1 and 3")
-    
-    # Check API key if using AI models
     if not args.no_ai and args.ai_model in ['claude', 'openai']:
         if not args.api_key and not os.getenv('ANTHROPIC_API_KEY') and not os.getenv('OPENAI_API_KEY'):
             print(f"{Fore.YELLOW}[!] Warning: No API key provided for {args.ai_model}. Falling back to local mode.{Style.RESET_ALL}")
             args.ai_model = 'local'
-    
     return True
 
 def get_builtin_paths(recon_data):
-    """Get built-in paths for fallback"""
-    paths = [
-        '/admin', '/administrator', '/login', '/dashboard',
-        '/api', '/api/v1', '/api/v2', '/graphql', '/graphiql',
-        '/config', '/configuration', '/settings',
-        '/.env', '/config.php', '/config.json',
-        '/.git', '/git', '/svn', '/.svn',
-        '/backup', '/backups', '/backup.zip', '/backup.tar',
-        '/db', '/database', '/sql', '/mysql',
-        '/wp-admin', '/wp-login.php', '/wp-content',
-        '/manager', '/console', '/admin-console',
-        '/test', '/testing', '/dev', '/development',
-        '/logs', '/error_log', '/access_log',
-        '/uploads', '/files', '/downloads',
-        '/cgi-bin', '/cgi', '/cgi/test.cgi',
-        '/.well-known', '/.well-known/security.txt',
-        '/robots.txt', '/sitemap.xml', '/humans.txt'
-    ]
-    
-    # Add technology-specific paths
+    paths = ['/admin', '/administrator', '/login', '/dashboard', '/api', '/api/v1', '/api/v2', '/graphql', '/graphiql',
+             '/config', '/configuration', '/settings', '/.env', '/config.php', '/config.json', '/.git', '/git', '/svn', '/.svn',
+             '/backup', '/backups', '/backup.zip', '/backup.tar', '/db', '/database', '/sql', '/mysql', '/wp-admin', '/wp-login.php',
+             '/wp-content', '/manager', '/console', '/admin-console', '/test', '/testing', '/dev', '/development', '/logs',
+             '/error_log', '/access_log', '/uploads', '/files', '/downloads', '/cgi-bin', '/cgi', '/cgi/test.cgi',
+             '/.well-known', '/.well-known/security.txt', '/robots.txt', '/sitemap.xml', '/humans.txt']
     tech = recon_data.get('tech', [])
     if 'WordPress' in tech:
         paths.extend(['/wp-includes', '/wp-json', '/xmlrpc.php', '/license.txt'])
@@ -175,34 +125,24 @@ def get_builtin_paths(recon_data):
         paths.extend(['/info.php', '/phpinfo.php', '/test.php'])
     if 'Laravel' in tech:
         paths.extend(['/storage', '/.env.example', '/artisan'])
-    
+    if 'Shopify' in tech:
+        paths.extend(['/admin', '/cart', '/checkout', '/collections', '/products', '/account'])
     return paths
 
 def main():
-    """Enhanced main execution flow"""
-    # Set up signal handler
     signal.signal(signal.SIGINT, signal_handler)
-    
     banner()
     args = parse_args()
-    
     try:
         validate_args(args)
     except ValueError as e:
         print(f"{Fore.RED}[-] Argument error: {e}{Style.RESET_ALL}")
         sys.exit(1)
-    
-    # Setup logging
     logger = setup_logging(args)
-    
-    # Initialize output formatter
     output = OutputFormatter(args.output, args.verbose, args.quiet, args.format)
-    
     try:
         output.system_status("INITIATING SYSTEM SCAN", "boot_sequence")
         logger.info(f"Starting scan for {args.url}")
-        
-        # Initialize plugin manager if requested
         plugin_manager = None
         if args.plugins and PLUGINS_AVAILABLE:
             output.system_status("LOADING NEURAL MODULES", "plugin_init")
@@ -210,16 +150,11 @@ def main():
             plugin_manager.load_plugins()
         elif args.plugins and not PLUGINS_AVAILABLE:
             output.warning("Plugins requested but not available. Install plugins.py to use this feature.")
-        
-        # Step 1: Reconnaissance
         output.system_status("PERFORMING RECONNAISSANCE", "recon_start")
         recon = WebRecon(args.url, args.timeout, args.user_agent, args.proxy, args.cookies)
         recon_data = recon.analyze()
-        
         if args.verbose:
             output.recon_summary(recon_data)
-        
-        # Step 2: Generate paths
         paths = []
         if args.wordlist:
             output.system_status(f"LOADING WORDLIST: {args.wordlist}", "wordlist_load")
@@ -238,8 +173,6 @@ def main():
         else:
             output.system_status("USING BUILT-IN PATH DATABASE", "builtin_paths")
             paths = get_builtin_paths(recon_data)
-        
-        # Add extensions if specified
         if args.extensions and not args.wordlist:
             paths_with_ext = []
             for path in paths:
@@ -248,48 +181,23 @@ def main():
                         paths_with_ext.append(f"{path}.{ext.strip()}")
             paths.extend(paths_with_ext)
             output.info(f"Added extensions: {args.extensions}")
-        
-        # Remove duplicates and sort
         paths = sorted(list(set(paths)))
         output.info(f"Total unique paths to test: {len(paths)}")
-        
-        # Step 3: Bust directories
         output.system_status(f"INITIATING PATH ENUMERATION - THREADS: {args.threads}", "scan_start")
-        buster = PathBuster(
-            args.url, 
-            args.threads, 
-            args.timeout, 
-            args.delay,
-            retries=args.retries,
-            proxy=args.proxy,
-            cookies=args.cookies,
-            rate_limit=args.rate_limit,
-            user_agent=args.user_agent,
-            headers=args.headers
-        )
-        
-        # Run scan
+        buster = PathBuster(args.url, args.threads, args.timeout, args.delay, retries=args.retries, proxy=args.proxy,
+                          cookies=args.cookies, rate_limit=args.rate_limit, user_agent=args.user_agent, headers=args.headers)
         results = buster.bust(paths, output)
-        
-        # Step 4: Run plugins if enabled
         if plugin_manager:
             output.system_status("EXECUTING NEURAL MODULES", "plugin_run")
             plugin_results = plugin_manager.run_plugins(recon_data, results['results'])
             results['results']['plugin_results'] = plugin_results
-        
-        # Step 5: Display and save results
         output.summary(results['results'])
-        
         if args.output:
             output.save_results(results['results'])
             output.success(f"Results saved to {args.output}")
-        
-        # Step 6: Generate report
         if args.output and args.format:
             output.generate_report(results['results'], args.format)
-        
         logger.info(f"Scan completed. Found {len(results['results']['found'])} accessible paths.")
-        
     except KeyboardInterrupt:
         output.error("\nScan interrupted by user")
         logger.warning("Scan interrupted by user")

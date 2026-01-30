@@ -17,6 +17,11 @@ python3 aibuster.py -u https://example.com --ai-model claude -v
 python3 aibuster.py -u https://wp-site.com --plugins wordpress,sensitive-files -v
 ```
 
+### Shopify Store Scan
+```bash
+python3 aibuster.py -u https://store.myshopify.com --plugins shopify,api-scanner -v
+```
+
 ### API Discovery
 ```bash
 python3 aibuster.py -u https://api.example.com --plugins api-scanner -v
@@ -26,7 +31,7 @@ python3 aibuster.py -u https://api.example.com --plugins api-scanner -v
 ```bash
 python3 aibuster.py -u https://target.com \
     --ai-model claude \
-    --plugins wordpress,sensitive-files,api-scanner \
+    --plugins wordpress,sensitive-files,api-scanner,shopify \
     -t 15 -v -o report.html --format html
 ```
 
@@ -39,7 +44,7 @@ python3 aibuster.py -u https://target.com \
 | `-v` | Verbose | `-v` |
 | `-o` | Output file | `-o results.json` |
 | `--ai-model` | AI model | `--ai-model claude` |
-| `--plugins` | Enable plugins | `--plugins wordpress,api-scanner` |
+| `--plugins` | Enable plugins | `--plugins wordpress,shopify` |
 | `--format` | Output format | `--format html` |
 | `--delay` | Request delay | `--delay 1` |
 
@@ -50,6 +55,7 @@ python3 aibuster.py -u https://target.com \
 | `wordpress` | WordPress security scanner |
 | `sensitive-files` | Sensitive file detector |
 | `api-scanner` | API endpoint analyzer |
+| `shopify` | Shopify store scanner (NEW!) |
 
 ## 🎨 Output Symbols
 
@@ -66,13 +72,8 @@ python3 aibuster.py -u https://target.com \
 ## 🔧 Setup
 
 ```bash
-# Install
 pip install -r requirements.txt
-
-# Set API key
 export ANTHROPIC_API_KEY="your-key"
-
-# Test
 python3 aibuster.py --help
 ```
 
@@ -102,15 +103,13 @@ python3 aibuster.py --help
 5. ✅ Save results with `-o`
 6. ✅ Use plugins for deep scans
 
-## 🔒 Legal
+## 🔐 Legal
 
 **Always obtain authorization before scanning!**
-
 Unauthorized scanning is illegal.
 
 ---
 
 For full documentation, see:
 - `README.md` - Complete guide
-- `SETUP_GUIDE.md` - Detailed setup
 - `aibuster.py --help` - CLI help
