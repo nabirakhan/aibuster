@@ -139,7 +139,7 @@ Generate 60-100 high-probability paths organized by category:
 
 8. KEYWORD-BASED PATHS (Based on: {keywords}):
    - Generate 8-12 paths using extracted keywords
-   - Examples: /{keyword}, /{keyword}/admin, /{keyword}/api, /{keyword}.php
+   - Examples: /{keywords}, /{keywords}/admin, /{keywords}/api, /{keywords}.php
 
 9. LOGS & MONITORING (5-8 paths):
    - /logs, /log, /error_log, /access_log, /error.log, /debug.log, /app.log, /application.log
