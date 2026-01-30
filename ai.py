@@ -1,557 +1,362 @@
-#!/usr/bin/env python3
-import os
 import json
+import os
 import re
-from typing import List, Dict, Set, Optional, Tuple
-from dataclasses import dataclass, field
-from collections import defaultdict
-import logging
+import time
+from typing import List, Dict, Any
+import requests
+from abc import ABC, abstractmethod
 
-@dataclass
-class PathContext:
-    """Context information for intelligent path generation"""
-    discovered_paths: List[str] = field(default_factory=list)
-    successful_patterns: Dict[str, int] = field(default_factory=dict)
-    technology_stack: List[str] = field(default_factory=list)
-    version_info: Dict[str, str] = field(default_factory=dict)
-    api_patterns: List[str] = field(default_factory=list)
-    keywords: List[str] = field(default_factory=list)
+class BaseAIModel(ABC):
+    @abstractmethod
+    def generate_paths(self, context: Dict[str, Any]) -> List[str]:
+        pass
+    @abstractmethod
+    def get_model_name(self) -> str:
+        pass
 
-@dataclass
-class ModelResult:
-    """Result from a single AI model"""
-    model_name: str
-    paths: List[str]
-    confidence: float
-    generation_time: float
-
-class PathLearningEngine:
-    """Learns from scan results to improve future path generation"""
+class ClaudeAIModel(BaseAIModel):
+    def __init__(self, api_key=None):
+        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        if not self.api_key:
+            raise ValueError("Claude API key not found. Set ANTHROPIC_API_KEY environment variable.")
+        self.api_url = "https://api.anthropic.com/v1/messages"
+        self.model = "claude-3-haiku-20240307"
+        self.max_tokens = 2500
     
-    def __init__(self, learning_file: str = "path_learning.json"):
-        self.learning_file = learning_file
-        self.success_patterns = defaultdict(int)
-        self.failure_patterns = defaultdict(int)
-        self.tech_specific_patterns = defaultdict(lambda: defaultdict(int))
-        self.logger = logging.getLogger(__name__)
-        self.load_learning_data()
+    def get_model_name(self):
+        return "Claude 3 Haiku"
     
-    def load_learning_data(self):
-        """Load previously learned patterns"""
-        if os.path.exists(self.learning_file):
-            try:
-                with open(self.learning_file, 'r') as f:
-                    data = json.load(f)
-                    self.success_patterns = defaultdict(int, data.get('success', {}))
-                    self.failure_patterns = defaultdict(int, data.get('failure', {}))
-                    self.tech_specific_patterns = defaultdict(
-                        lambda: defaultdict(int), 
-                        {k: defaultdict(int, v) for k, v in data.get('tech_patterns', {}).items()}
-                    )
-                self.logger.info(f"Loaded {len(self.success_patterns)} success patterns")
-            except Exception as e:
-                self.logger.warning(f"Could not load learning data: {e}")
-    
-    def save_learning_data(self):
-        """Save learned patterns for future use"""
-        try:
-            data = {
-                'success': dict(self.success_patterns),
-                'failure': dict(self.failure_patterns),
-                'tech_patterns': {k: dict(v) for k, v in self.tech_specific_patterns.items()}
-            }
-            with open(self.learning_file, 'w') as f:
-                json.dump(data, f, indent=2)
-            self.logger.info("Saved learning data")
-        except Exception as e:
-            self.logger.error(f"Could not save learning data: {e}")
-    
-    def learn_from_results(self, results: List[Dict], technologies: List[str]):
-        """Learn from scan results"""
-        for result in results:
-            path = result.get('path', '')
-            status = result.get('status', 0)
-            
-            pattern = self._extract_pattern(path)
-            
-            if status == 200:
-                self.success_patterns[pattern] += 1
-                for tech in technologies:
-                    self.tech_specific_patterns[tech][pattern] += 1
-            elif status in [404, 403]:
-                self.failure_patterns[pattern] += 1
-        
-        self.save_learning_data()
-    
-    def _extract_pattern(self, path: str) -> str:
-        """Extract a generalizable pattern from a path"""
-        path = re.sub(r'/\d+/', '/[ID]/', path)
-        path = re.sub(r'\d{4}-\d{2}-\d{2}', '[DATE]', path)
-        path = re.sub(r'[a-f0-9]{32,}', '[HASH]', path)
-        path = re.sub(r'v\d+', 'v[N]', path)
-        return path
-    
-    def get_high_value_patterns(self, technologies: List[str], limit: int = 20) -> List[str]:
-        """Get patterns likely to succeed based on learning"""
-        patterns = []
-        
-        for tech in technologies:
-            tech_patterns = self.tech_specific_patterns.get(tech, {})
-            sorted_patterns = sorted(tech_patterns.items(), key=lambda x: x[1], reverse=True)
-            patterns.extend([p[0] for p in sorted_patterns[:limit]])
-        
-        general_patterns = sorted(self.success_patterns.items(), key=lambda x: x[1], reverse=True)
-        patterns.extend([p[0] for p in general_patterns[:limit]])
-        
-        return list(set(patterns))
-
-class ContextChainer:
-    """Generates related paths based on discovered paths"""
-    
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
-        self.api_version_pattern = re.compile(r'/api/v(\d+)/')
-        self.resource_pattern = re.compile(r'/([a-z_]+)/?$')
-        self.id_pattern = re.compile(r'/(\d+)/?$')
-    
-    def chain_from_discoveries(self, discovered_paths: List[str]) -> List[str]:
-        """Generate related paths from discoveries"""
-        chained_paths = set()
-        
-        for path in discovered_paths:
-            chained_paths.update(self._chain_api_versions(path))
-            chained_paths.update(self._chain_resources(path))
-            chained_paths.update(self._chain_crud_operations(path))
-            chained_paths.update(self._chain_common_siblings(path))
-            chained_paths.update(self._chain_depth_variations(path))
-        
-        return list(chained_paths)
-    
-    def _chain_api_versions(self, path: str) -> Set[str]:
-        """Generate other API versions"""
-        paths = set()
-        match = self.api_version_pattern.search(path)
-        if match:
-            current_version = int(match.group(1))
-            base_path = path[:match.start()]
-            end_path = path[match.end()-1:]
-            
-            for v in range(1, max(current_version + 3, 5)):
-                if v != current_version:
-                    paths.add(f"{base_path}/api/v{v}{end_path}")
-        return paths
-    
-    def _chain_resources(self, path: str) -> Set[str]:
-        """Generate common resource variations"""
-        paths = set()
-        common_resources = {
-            'user': ['users', 'accounts', 'profiles', 'members'],
-            'product': ['products', 'items', 'goods', 'catalog'],
-            'order': ['orders', 'purchases', 'transactions'],
-            'post': ['posts', 'articles', 'content', 'blogs'],
-            'comment': ['comments', 'reviews', 'feedback'],
-            'file': ['files', 'documents', 'uploads', 'media'],
-            'admin': ['admin', 'administrator', 'management', 'dashboard'],
-            'api': ['api', 'rest', 'graphql', 'v1', 'v2']
+    def generate_paths(self, context: Dict[str, Any]) -> List[str]:
+        prompt = self._build_enhanced_prompt(context)
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01"
         }
-        
-        for singular, variations in common_resources.items():
-            if singular in path.lower():
-                for variation in variations:
-                    paths.add(path.replace(singular, variation))
-                    paths.add(path.replace(singular.capitalize(), variation.capitalize()))
-        
-        return paths
-    
-    def _chain_crud_operations(self, path: str) -> Set[str]:
-        """Generate CRUD operation variations"""
-        paths = set()
-        operations = ['create', 'read', 'update', 'delete', 'list', 'get', 'post', 'put', 'patch']
-        
-        for op in operations:
-            if path.endswith('/'):
-                paths.add(f"{path}{op}")
+        payload = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": 0.8,
+            "system": """You are an elite penetration testing AI specializing in web application security, directory enumeration, and vulnerability assessment. Your expertise includes:
+- Deep knowledge of web frameworks, CMSs, and application architectures
+- Understanding of common security misconfigurations and exposed endpoints
+- Experience with REST APIs, GraphQL, SOAP, and modern web technologies
+- Familiarity with backup patterns, version control artifacts, and sensitive files
+
+CRITICAL OUTPUT RULES:
+1. Return ONLY a valid JSON array of paths - no explanations, no markdown formatting
+2. Each path MUST start with /
+3. Generate 60-100 highly relevant, realistic paths based on the target context
+4. Prioritize paths likely to exist based on detected technologies and keywords
+5. Include creative variations and uncommon but realistic paths
+6. Focus on security-relevant endpoints (admin, API, configs, backups, sensitive files)
+
+Example output format (and ONLY this format):
+["/admin","/api/v1/users","/.env","/backup.zip","/wp-admin","/graphql"]""",
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        try:
+            print(f"[*] Calling Claude API...")
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
+            if response.status_code == 401:
+                print(f"[-] Invalid API key")
+                raise Exception("Claude API: Invalid API key")
+            elif response.status_code == 402:
+                print("[-] No credits available")
+                raise Exception("Claude API: Payment required - add API credits at https://console.anthropic.com/settings/billing")
+            elif response.status_code == 429:
+                raise Exception("Claude API: Rate limited")
+            elif response.status_code != 200:
+                error_text = response.text[:200]
+                raise Exception(f"Claude API Error {response.status_code}: {error_text}")
+            data = response.json()
+            if 'content' in data and len(data['content']) > 0:
+                content = data['content'][0]['text']
+                print(f"[+] Received {len(content)} characters from Claude")
+                return self._parse_response(content)
             else:
-                paths.add(f"{path}/{op}")
-        
-        return paths
+                raise Exception("No content in Claude response")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Claude API connection error: {str(e)}")
+        except Exception as e:
+            raise Exception(f"Claude API error: {str(e)}")
     
-    def _chain_common_siblings(self, path: str) -> Set[str]:
-        """Generate common sibling paths"""
-        paths = set()
-        parts = path.rstrip('/').split('/')
-        
-        if len(parts) > 1:
-            base = '/'.join(parts[:-1])
-            siblings = ['config', 'settings', 'info', 'status', 'health', 'debug', 
-                       'test', 'admin', 'docs', 'swagger', 'schema', 'metadata']
-            
-            for sibling in siblings:
-                paths.add(f"{base}/{sibling}")
-        
-        return paths
-    
-    def _chain_depth_variations(self, path: str) -> Set[str]:
-        """Generate depth variations of discovered paths"""
-        paths = set()
-        parts = path.rstrip('/').split('/')
-        
-        for i in range(1, len(parts)):
-            partial = '/'.join(parts[:i+1])
-            paths.add(partial)
-            paths.add(f"{partial}/")
-        
-        return paths
+    def _build_enhanced_prompt(self, context: Dict[str, Any]) -> str:
+        url = context.get('url', 'Unknown')
+        tech = ', '.join(context.get('tech', [])[:8]) if context.get('tech') else 'Unknown'
+        keywords = ', '.join(context.get('keywords', [])[:25]) if context.get('keywords') else 'None'
+        return f"""Generate comprehensive hidden directory paths for penetration testing:
 
-class EnhancedAIPathGenerator:
-    """Enhanced AI path generator with multi-model consensus and learning"""
+TARGET ANALYSIS:
+- URL: {url}
+- Detected Technologies: {tech}
+- Extracted Keywords: {keywords}
+
+Generate 60-100 high-probability paths organized by category:
+
+1. ADMIN & AUTHENTICATION (15-20 paths):
+   - Admin panels: /admin, /administrator, /admin-panel, /control-panel, /dashboard, /admin/login
+   - Login endpoints: /login, /signin, /auth, /authenticate, /user/login, /account/login
+   - Management: /manager, /console, /backend, /backoffice, /administration
+
+2. API ENDPOINTS (15-20 paths):
+   - REST APIs: /api, /api/v1, /api/v2, /api/v3, /rest, /restapi, /api/auth, /api/users, /api/admin
+   - GraphQL: /graphql, /graphiql, /graphql/playground, /api/graphql
+   - WebSocket: /ws, /websocket, /socket.io
+   - Internal APIs: /internal/api, /private/api, /api/internal
+
+3. SENSITIVE CONFIGURATION (15-20 paths):
+   - Environment files: /.env, /.env.local, /.env.production, /.env.backup, /.env.old, /.env.dev
+   - Config files: /config, /config.php, /config.json, /config.yml, /configuration, /settings.json, /app.config
+   - Database configs: /database.yml, /db.json, /database.php, /dbconfig.php
+   - Web configs: /.htaccess, /.htpasswd, /web.config, /nginx.conf
+
+4. BACKUPS & ARCHIVES (10-15 paths):
+   - Backup files: /backup, /backups, /backup.zip, /backup.tar.gz, /backup.sql, /db_backup.sql
+   - Archives: /archive, /archives, /old, /oldsite, /site-backup, /website.zip
+   - Database dumps: /dump.sql, /database.sql, /mysqldump.sql, /db.dump
+   - Source backups: /src.zip, /source.tar.gz, /www.zip
+
+5. DEVELOPMENT & DEBUG (10-12 paths):
+   - Dev environments: /dev, /development, /test, /testing, /staging, /qa, /sandbox
+   - Debug pages: /debug, /debug.php, /phpinfo.php, /info.php, /test.php, /diagnostic
+   - Temp files: /tmp, /temp, /cache, /_temp
+
+6. VERSION CONTROL & CI/CD (8-10 paths):
+   - Git: /.git, /.git/config, /.git/HEAD, /.git/logs, /.gitignore
+   - SVN: /.svn, /.svn/entries
+   - Others: /.hg, /.bzr, /.gitlab-ci.yml, /.github
+
+7. TECHNOLOGY-SPECIFIC PATHS (Based on: {tech}):
+   - Generate 10-15 paths specific to detected technologies
+   - WordPress: /wp-admin, /wp-login.php, /wp-content/plugins, /wp-json, /xmlrpc.php
+   - Laravel: /storage/logs, /artisan, /vendor, /.env
+   - Django: /admin/, /accounts, /api, /media, /static
+   - Node.js: /node_modules, /package.json, /package-lock.json
+   - Shopify: /admin, /cart.json, /products.json, /collections.json, /checkout
+   - React/Vue: /build, /dist, /public, /src
+   - Java: /WEB-INF, /web.xml, /admin/console, /manager
+
+8. KEYWORD-BASED PATHS (Based on: {keywords}):
+   - Generate 8-12 paths using extracted keywords
+   - Examples: /{keywords}, /{keywords}/admin, /{keywords}/api, /{keywords}.php
+
+9. LOGS & MONITORING (5-8 paths):
+   - /logs, /log, /error_log, /access_log, /error.log, /debug.log, /app.log, /application.log
+
+10. COMMON ENDPOINTS (5-8 paths):
+    - /robots.txt, /sitemap.xml, /.well-known/security.txt, /humans.txt, /ads.txt
+    - /favicon.ico, /crossdomain.xml
+
+Return ONLY the JSON array of paths. No explanations. No markdown. Just the array."""
     
-    def __init__(self, model: str = "local", api_key: Optional[str] = None, 
-                 enable_learning: bool = True, enable_chaining: bool = True):
-        self.model = model
-        self.api_key = api_key or os.getenv('ANTHROPIC_API_KEY') or os.getenv('OPENAI_API_KEY')
-        self.logger = logging.getLogger(__name__)
-        self.enable_learning = enable_learning
-        self.enable_chaining = enable_chaining
-        
-        if enable_learning:
-            self.learning_engine = PathLearningEngine()
-        
-        if enable_chaining:
-            self.context_chainer = ContextChainer()
-        
-        self.context = PathContext()
-        
-        if model == "claude" and self.api_key:
-            try:
-                from anthropic import Anthropic
-                self.claude_client = Anthropic(api_key=self.api_key)
-            except ImportError:
-                self.logger.warning("Anthropic library not installed. Install with: pip install anthropic")
-                self.model = "local"
-        
-        if model == "openai" and self.api_key:
-            try:
-                from openai import OpenAI
-                self.openai_client = OpenAI(api_key=self.api_key)
-            except ImportError:
-                self.logger.warning("OpenAI library not installed. Install with: pip install openai")
-                self.model = "local"
-    
-    def generate_paths(self, recon_data: Dict, depth: int = 1, 
-                      discovered_paths: Optional[List[str]] = None,
-                      use_consensus: bool = False) -> List[str]:
-        """Generate intelligent paths with optional multi-model consensus"""
-        
-        self.context.technology_stack = recon_data.get('tech', [])
-        self.context.keywords = recon_data.get('keywords', [])
-        self.context.discovered_paths = discovered_paths or []
-        
-        all_paths = set()
-        
-        if use_consensus and self.api_key:
-            paths = self._multi_model_consensus(recon_data, depth)
-        else:
-            if self.model == "claude":
-                paths = self._generate_claude_paths(recon_data, depth)
-            elif self.model == "openai":
-                paths = self._generate_openai_paths(recon_data, depth)
+    def _parse_response(self, text: str) -> List[str]:
+        if not text:
+            return []
+        print("[*] Parsing Claude response...")
+        try:
+            text = re.sub(r'```(json)?|```', '', text).strip()
+            json_match = re.search(r'\[.*\]', text, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
             else:
-                paths = self._generate_local_paths(recon_data, depth)
-        
-        all_paths.update(paths)
-        
-        if self.enable_learning:
-            learned_patterns = self.learning_engine.get_high_value_patterns(
-                self.context.technology_stack, limit=30
-            )
-            all_paths.update(learned_patterns)
-            self.logger.info(f"Added {len(learned_patterns)} learned patterns")
-        
-        if self.enable_chaining and discovered_paths:
-            chained_paths = self.context_chainer.chain_from_discoveries(discovered_paths)
-            all_paths.update(chained_paths)
-            self.logger.info(f"Added {len(chained_paths)} chained paths from discoveries")
-        
-        return sorted(list(all_paths))
-    
-    def _multi_model_consensus(self, recon_data: Dict, depth: int) -> List[str]:
-        """Use multiple models and combine results with weighted consensus"""
-        import time
-        
-        results = []
-        
-        models_to_try = []
-        if hasattr(self, 'claude_client'):
-            models_to_try.append('claude')
-        if hasattr(self, 'openai_client'):
-            models_to_try.append('openai')
-        models_to_try.append('local')
-        
-        for model in models_to_try[:2]:
+                data = json.loads(text)
+            if isinstance(data, dict):
+                for key in ['paths', 'directories', 'results', 'data']:
+                    if key in data and isinstance(data[key], list):
+                        data = data[key]
+                        break
+            cleaned = []
+            if isinstance(data, list):
+                for path in data:
+                    if isinstance(path, str):
+                        path = path.strip()
+                        if not path.startswith('/'):
+                            path = '/' + path
+                        path = re.sub(r'/+', '/', path)
+                        if len(path) > 1 and len(path) < 200:
+                            cleaned.append(path)
+            print(f"[+] Parsed {len(cleaned)} valid paths")
+            return list(set(cleaned))
+        except Exception as e:
+            print(f"[-] Parse error: {e}")
             try:
-                start_time = time.time()
-                
-                if model == 'claude':
-                    paths = self._generate_claude_paths(recon_data, depth)
-                    confidence = 0.9
-                elif model == 'openai':
-                    paths = self._generate_openai_paths(recon_data, depth)
-                    confidence = 0.85
-                else:
-                    paths = self._generate_local_paths(recon_data, depth)
-                    confidence = 0.7
-                
-                elapsed = time.time() - start_time
-                
-                results.append(ModelResult(
-                    model_name=model,
-                    paths=paths,
-                    confidence=confidence,
-                    generation_time=elapsed
-                ))
-                
-                self.logger.info(f"{model} generated {len(paths)} paths in {elapsed:.2f}s")
-                
-            except Exception as e:
-                self.logger.error(f"Error with {model}: {e}")
-        
-        consensus_paths = self._combine_model_results(results)
-        self.logger.info(f"Consensus generated {len(consensus_paths)} unique paths")
-        
-        return consensus_paths
+                paths = re.findall(r'["\'](/[^"\'\s]+)["\']', text)
+                return list(set(paths))
+            except:
+                return []
+
+class OpenAIModel(BaseAIModel):
+    def __init__(self, api_key=None):
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not self.api_key:
+            raise ValueError("OpenAI API key not found.")
+        self.api_url = "https://api.openai.com/v1/chat/completions"
+        self.model = "gpt-3.5-turbo"
     
-    def _combine_model_results(self, results: List[ModelResult]) -> List[str]:
-        """Combine results from multiple models with weighted voting"""
-        path_votes = defaultdict(float)
-        
-        for result in results:
-            for path in result.paths:
-                path_votes[path] += result.confidence
-        
-        threshold = max(path_votes.values()) * 0.3 if path_votes else 0
-        
-        consensus_paths = [path for path, score in path_votes.items() if score >= threshold]
-        
-        return consensus_paths
+    def get_model_name(self):
+        return "GPT-3.5 Turbo"
     
-    def _generate_claude_paths(self, recon_data: Dict, depth: int) -> List[str]:
-        """Generate paths using Claude with enhanced prompts"""
-        if not hasattr(self, 'claude_client'):
-            return self._generate_local_paths(recon_data, depth)
-        
-        tech = recon_data.get('tech', [])
-        keywords = recon_data.get('keywords', [])
-        server = recon_data.get('server', '')
-        title = recon_data.get('title', '')
-        
-        discovered_context = ""
-        if self.context.discovered_paths:
-            discovered_context = f"\n\nPreviously discovered paths:\n" + "\n".join(self.context.discovered_paths[:20])
-        
-        prompt = f"""You are an expert penetration tester specializing in web application enumeration.
+    def generate_paths(self, context: Dict[str, Any]) -> List[str]:
+        prompt = self._build_prompt(context)
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": "You are a penetration testing expert. Generate realistic web paths for security testing. Return ONLY a JSON array of paths."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 2000
+        }
+        try:
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
+            if response.status_code != 200:
+                raise Exception(f"OpenAI API Error: {response.status_code}")
+            data = response.json()
+            if 'choices' in data and len(data['choices']) > 0:
+                content = data['choices'][0]['message']['content']
+                return self._parse_response(content)
+            else:
+                raise Exception("No response from OpenAI")
+        except Exception as e:
+            raise Exception(f"OpenAI API error: {str(e)}")
+    
+    def _build_prompt(self, context: Dict[str, Any]) -> str:
+        url = context.get('url', 'Unknown')
+        tech = ', '.join(context.get('tech', [])[:5]) if context.get('tech') else 'Unknown'
+        keywords = ', '.join(context.get('keywords', [])[:15]) if context.get('keywords') else 'None'
+        return f"""Target: {url}
+Technologies: {tech}
+Keywords: {keywords}
 
-Target Information:
-- Technologies detected: {', '.join(tech) if tech else 'Unknown'}
-- Server: {server}
-- Page title: {title}
-- Keywords found: {', '.join(keywords[:10]) if keywords else 'None'}
-{discovered_context}
-
-Generate a comprehensive list of 80-120 high-probability directory and file paths for this target.
-
-CRITICAL REQUIREMENTS:
-1. Generate ONLY the paths, one per line
-2. Each path must start with /
-3. NO explanations, categories, or markdown
-4. Focus on paths specific to detected technologies
-5. Include version-specific paths when technology versions are known
-6. Include both common and uncommon paths
-7. Consider security testing paths (admin panels, configs, backups, APIs)
-8. If previous paths are provided, generate related/similar paths
-
-Categories to cover (but don't label them in output):
-- Admin interfaces & dashboards
-- API endpoints (REST, GraphQL, SOAP)
-- Configuration files & environment files  
-- Backup files & archives
-- Development/testing endpoints
-- Database interfaces
-- File upload locations
-- Authentication endpoints
+Generate 60-80 paths including:
+- Admin panels and dashboards
+- API endpoints (REST, GraphQL)
+- Config and backup files
 - Technology-specific paths
-- Version control artifacts
+- Sensitive files (.env, .git)
 
-Return ONLY paths, nothing else:"""
-
+Return ONLY a JSON array of paths. Each path must start with /.
+Example: ["/admin", "/api/v1", "/.env"]"""
+    
+    def _parse_response(self, text: str) -> List[str]:
         try:
-            message = self.claude_client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=4000,
-                temperature=0.7,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            response_text = message.content[0].text
-            paths = [line.strip() for line in response_text.split('\n') 
-                    if line.strip() and line.strip().startswith('/')]
-            
-            return paths
-            
-        except Exception as e:
-            self.logger.error(f"Claude generation error: {e}")
-            return self._generate_local_paths(recon_data, depth)
+            text = re.sub(r'```(json)?|```', '', text).strip()
+            json_match = re.search(r'\[.*\]', text, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+            else:
+                data = json.loads(text)
+            if isinstance(data, dict) and "paths" in data:
+                paths = data["paths"]
+            elif isinstance(data, list):
+                paths = data
+            else:
+                paths = []
+            cleaned = []
+            for path in paths:
+                if isinstance(path, str):
+                    path = path.strip()
+                    if not path.startswith('/'):
+                        path = '/' + path
+                    if len(path) > 1:
+                        cleaned.append(path)
+            return list(set(cleaned))
+        except:
+            paths = re.findall(r'["\'](/[^"\'\s]+)["\']', text)
+            return list(set(paths))
+
+class LocalModel(BaseAIModel):
+    def __init__(self):
+        pass
     
-    def _generate_openai_paths(self, recon_data: Dict, depth: int) -> List[str]:
-        """Generate paths using OpenAI GPT"""
-        if not hasattr(self, 'openai_client'):
-            return self._generate_local_paths(recon_data, depth)
-        
-        tech = recon_data.get('tech', [])
-        keywords = recon_data.get('keywords', [])
-        
-        discovered_context = ""
-        if self.context.discovered_paths:
-            discovered_context = f"\n\nPreviously discovered:\n" + "\n".join(self.context.discovered_paths[:20])
-        
-        prompt = f"""Generate 60-80 high-probability web paths for penetration testing.
+    def get_model_name(self):
+        return "Local Pattern Matcher (Enhanced)"
+    
+    def generate_paths(self, context: Dict[str, Any]) -> List[str]:
+        paths = {
+            '/admin', '/administrator', '/admin/login', '/admin/index', '/admin/dashboard', '/panel', '/control',
+            '/console', '/manager', '/backend', '/backoffice', '/login', '/signin', '/auth', '/authenticate', '/session',
+            '/api', '/api/v1', '/api/v2', '/api/v3', '/rest', '/restful', '/graphql', '/graphiql', '/api/docs',
+            '/api/swagger', '/swagger', '/api/users', '/api/admin', '/api/auth', '/api/login',
+            '/.env', '/.env.local', '/.env.production', '/.env.development', '/config', '/config.php', '/config.json',
+            '/config.yml', '/settings', '/configuration', '/configure', '/.htaccess', '/.htpasswd', '/web.config',
+            '/app.config', '/database.yml', '/backup', '/backups', '/backup.zip', '/backup.tar.gz', '/backup.sql',
+            '/db_backup', '/dump', '/dump.sql', '/database.sql', '/old', '/oldsite', '/dev', '/development', '/test',
+            '/testing', '/debug', '/temp', '/tmp', '/phpinfo.php', '/info.php', '/test.php', '/debug.php',
+            '/.git', '/.git/config', '/.git/HEAD', '/.svn', '/.hg', '/logs', '/log', '/error_log', '/access_log',
+            '/error.log', '/access.log', '/debug.log', '/application.log', '/robots.txt', '/sitemap.xml', '/humans.txt',
+            '/security.txt', '/.well-known', '/.well-known/security.txt', '/uploads', '/files', '/media', '/images',
+            '/documents', '/attachments', '/download', '/downloads', '/cgi-bin', '/scripts', '/js', '/javascript',
+            '/css', '/assets'
+        }
+        for tech in context.get('tech', []):
+            tech_lower = tech.lower()
+            if 'wordpress' in tech_lower:
+                paths.update(['/wp-admin', '/wp-login.php', '/wp-content', '/wp-includes', '/wp-json', '/xmlrpc.php',
+                            '/wp-config.php', '/wp-config.php.bak', '/wp-content/plugins', '/wp-content/themes',
+                            '/wp-content/uploads'])
+            if 'php' in tech_lower:
+                paths.update(['/phpinfo.php', '/info.php', '/test.php', '/shell.php', '/upload.php', '/admin.php', '/index.php'])
+            if 'laravel' in tech_lower:
+                paths.update(['/storage', '/storage/logs', '/.env', '/artisan', '/vendor', '/bootstrap/cache'])
+            if 'django' in tech_lower or 'python' in tech_lower:
+                paths.update(['/admin/', '/accounts', '/api', '/.env', '/settings.py', '/manage.py', '/requirements.txt'])
+            if 'node' in tech_lower or 'express' in tech_lower:
+                paths.update(['/.env', '/package.json', '/node_modules', '/dist', '/build'])
+            if 'react' in tech_lower or 'vue' in tech_lower or 'angular' in tech_lower:
+                paths.update(['/build', '/dist', '/public', '/src', '/.env'])
+            if 'java' in tech_lower:
+                paths.update(['/admin/console', '/manager', '/jmx-console', '/web-console', '/WEB-INF', '/WEB-INF/web.xml'])
+            if 'asp' in tech_lower or '.net' in tech_lower:
+                paths.update(['/admin', '/Admin', '/admin.aspx', '/login.aspx', '/web.config', '/Web.config'])
+            if 'shopify' in tech_lower:
+                paths.update(['/admin', '/cart', '/cart.json', '/checkout', '/collections', '/collections.json',
+                            '/products', '/products.json', '/account', '/account/login', '/pages', '/blogs'])
+        for kw in context.get('keywords', [])[:20]:
+            if len(kw) > 2 and kw.isalnum():
+                paths.update([f'/{kw}', f'/{kw}/admin', f'/{kw}/api', f'/{kw}.php', f'/{kw}.html'])
+        return sorted(list(paths))
 
-Target details:
-- Technologies: {', '.join(tech)}
-- Keywords: {', '.join(keywords[:10])}
-{discovered_context}
-
-Requirements:
-- Only output paths, one per line
-- Each path starts with /
-- No explanations or categories
-- Include admin, API, config, backup, dev paths
-- Focus on detected technologies
-- Include version-specific paths
-
-Output only the paths:"""
-
+class AIPathGenerator:
+    def __init__(self, model="local", api_key=None):
+        self.model_name = model.lower()
         try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4-turbo-preview",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=2000,
-                temperature=0.7
-            )
-            
-            response_text = response.choices[0].message.content
-            paths = [line.strip() for line in response_text.split('\n') 
-                    if line.strip() and line.strip().startswith('/')]
-            
-            return paths
-            
+            if self.model_name == "claude":
+                self.model = ClaudeAIModel(api_key)
+            elif self.model_name == "openai":
+                self.model = OpenAIModel(api_key)
+            else:
+                self.model = LocalModel()
+                self.model_name = "local"
+            print(f"[+] Using {self.model.get_model_name()}")
+        except ValueError as e:
+            print(f"[!] {str(e)}")
+            print("[*] Falling back to local model")
+            self.model = LocalModel()
+            self.model_name = "local"
+    
+    def generate_paths(self, recon_data, depth=1, max_paths=500):
+        print(f"[*] Generating paths using {self.model.get_model_name()}...")
+        start = time.time()
+        try:
+            context = {
+                'url': recon_data.get('url', ''),
+                'keywords': recon_data.get('keywords', [])[:25],
+                'tech': recon_data.get('tech', []),
+                'links': recon_data.get('links', [])[:10],
+                'scripts': recon_data.get('scripts', [])[:10],
+                'forms': recon_data.get('forms', [])[:5]
+            }
+            paths = self.model.generate_paths(context)
+            duration = time.time() - start
+            print(f"[+] Generated {len(paths)} paths in {duration:.2f}s")
+            if len(paths) > max_paths:
+                paths = paths[:max_paths]
+            return sorted(list(set(paths)))
         except Exception as e:
-            self.logger.error(f"OpenAI generation error: {e}")
-            return self._generate_local_paths(recon_data, depth)
-    
-    def _generate_local_paths(self, recon_data: Dict, depth: int) -> List[str]:
-        """Enhanced local path generation with pattern-based intelligence"""
-        paths = set()
-        tech = recon_data.get('tech', [])
-        keywords = recon_data.get('keywords', [])
-        
-        base_paths = {
-            '/admin', '/administrator', '/admin-console', '/admin-panel', '/admin.php',
-            '/login', '/signin', '/auth', '/authenticate', '/login.php',
-            '/dashboard', '/panel', '/console', '/manager', '/control',
-            '/api', '/api/v1', '/api/v2', '/api/v3', '/rest', '/graphql', '/graphiql',
-            '/config', '/configuration', '/settings', '/setup', '/install',
-            '/.env', '/.env.local', '/.env.production', '/config.php', '/config.json',
-            '/backup', '/backups', '/backup.zip', '/backup.tar.gz', '/db_backup',
-            '/.git', '/.git/config', '/.svn', '/CVS',
-            '/test', '/testing', '/dev', '/development', '/debug', '/temp',
-            '/uploads', '/upload', '/files', '/media', '/assets', '/static',
-            '/logs', '/log', '/error_log', '/access_log', '/debug.log',
-            '/docs', '/documentation', '/swagger', '/api-docs', '/openapi.json',
-            '/robots.txt', '/sitemap.xml', '/humans.txt', '/security.txt',
-            '/.well-known', '/.well-known/security.txt', '/.well-known/change-password'
-        }
-        paths.update(base_paths)
-        
-        if 'WordPress' in tech:
-            paths.update({
-                '/wp-admin', '/wp-login.php', '/wp-content', '/wp-includes',
-                '/wp-json', '/wp-json/wp/v2/users', '/xmlrpc.php',
-                '/wp-config.php', '/wp-config.php.bak', '/license.txt',
-                '/readme.html', '/wp-content/uploads', '/wp-content/plugins',
-                '/wp-content/themes', '/wp-admin/install.php'
-            })
-        
-        if 'Joomla' in tech:
-            paths.update({
-                '/administrator', '/administrator/index.php', '/configuration.php',
-                '/components', '/modules', '/plugins', '/templates',
-                '/libraries', '/cache', '/logs', '/tmp'
-            })
-        
-        if 'Drupal' in tech:
-            paths.update({
-                '/user/login', '/admin/config', '/sites/default/settings.php',
-                '/CHANGELOG.txt', '/core', '/modules', '/themes',
-                '/sites/default/files'
-            })
-        
-        if 'Laravel' in tech:
-            paths.update({
-                '/storage', '/storage/logs', '/.env', '/.env.example',
-                '/artisan', '/public/storage', '/bootstrap/cache',
-                '/config', '/routes', '/database'
-            })
-        
-        if 'Django' in tech:
-            paths.update({
-                '/admin', '/admin/login', '/static', '/media',
-                '/settings.py', '/manage.py', '/__debug__',
-                '/api/schema', '/api/docs'
-            })
-        
-        if 'ASP.NET' in tech or 'IIS' in tech:
-            paths.update({
-                '/web.config', '/Web.config', '/bin', '/App_Data',
-                '/App_Code', '/aspnet_client', '/trace.axd',
-                '/elmah.axd', '/glimpse.axd'
-            })
-        
-        if 'PHP' in tech:
-            paths.update({
-                '/phpinfo.php', '/info.php', '/test.php', '/php.ini',
-                '/composer.json', '/composer.lock', '/vendor'
-            })
-        
-        if 'Node.js' in tech or 'Express' in tech:
-            paths.update({
-                '/package.json', '/package-lock.json', '/node_modules',
-                '/.env', '/dist', '/build', '/server.js'
-            })
-        
-        if 'Shopify' in tech:
-            paths.update({
-                '/admin', '/cart', '/checkout', '/account', '/collections',
-                '/products', '/pages', '/policies', '/search'
-            })
-        
-        api_paths = {
-            '/api/users', '/api/products', '/api/orders', '/api/auth',
-            '/api/login', '/api/register', '/api/config', '/api/status',
-            '/api/health', '/api/version', '/api/swagger.json',
-            '/v1/users', '/v2/users', '/v1/products', '/v2/products'
-        }
-        paths.update(api_paths)
-        
-        for keyword in keywords[:15]:
-            if len(keyword) > 3:
-                paths.add(f"/{keyword.lower()}")
-                paths.add(f"/{keyword.lower()}s")
-                paths.add(f"/api/{keyword.lower()}")
-        
-        return list(paths)
-    
-    def update_from_results(self, results: List[Dict]):
-        """Update learning engine from scan results"""
-        if self.enable_learning:
-            self.learning_engine.learn_from_results(results, self.context.technology_stack)
+            print(f"[-] Error: {e}")
+            print("[*] Using local fallback...")
+            fallback = LocalModel()
+            return fallback.generate_paths(context)

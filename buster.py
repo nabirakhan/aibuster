@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import json
 import requests
 import time
@@ -8,108 +7,109 @@ from queue import Queue, Empty
 from urllib3.exceptions import InsecureRequestWarning
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
+from enum import Enum
+import random
 import logging
 
-from adaptive_threading import AdaptiveThreadPool, AdaptiveRateLimiter, SmartConnectionPool
-from response_analyzer import ResponseAnalyzer, ContentExtractor
-
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+
+class ScanStatus(Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    RATE_LIMITED = "rate_limited"
 
 @dataclass
 class ScanRequest:
     path: str
     method: str = "GET"
     retries: int = 0
+    status: ScanStatus = ScanStatus.PENDING
     response_time: float = 0.0
+    last_try: float = 0.0
 
-class EnhancedPathBuster:
-    """Enhanced path buster with adaptive threading and intelligent analysis"""
+class RateLimiter:
+    def __init__(self, requests_per_minute=None, requests_per_second=None):
+        self.requests_per_minute = requests_per_minute
+        self.requests_per_second = requests_per_second
+        self.minute_window = []
+        self.second_window = []
+        self.lock = threading.Lock()
+        if requests_per_minute:
+            self.minute_limit = requests_per_minute
+            self.minute_window_size = 60
+        if requests_per_second:
+            self.second_limit = requests_per_second
+            self.second_window_size = 1
     
-    def __init__(self, base_url: str, threads: int = 10, timeout: int = 5, 
-                 delay: float = 0, retries: int = 2, proxy: Optional[str] = None, 
-                 cookies: Optional[str] = None, rate_limit: Optional[int] = None,
-                 user_agent: Optional[str] = None, headers: Optional[str] = None, 
-                 verify_ssl: bool = False, adaptive_threads: bool = True):
-        
+    def acquire(self):
+        with self.lock:
+            now = time.time()
+            if self.requests_per_minute:
+                self.minute_window = [t for t in self.minute_window if now - t < self.minute_window_size]
+                if len(self.minute_window) >= self.minute_limit:
+                    return False
+            if self.requests_per_second:
+                self.second_window = [t for t in self.second_window if now - t < self.second_window_size]
+                if len(self.second_window) >= self.second_limit:
+                    return False
+            if self.requests_per_minute:
+                self.minute_window.append(now)
+            if self.requests_per_second:
+                self.second_window.append(now)
+            return True
+    
+    def wait(self):
+        while not self.acquire():
+            time.sleep(0.1)
+
+class PathBuster:
+    def __init__(self, base_url, threads=10, timeout=5, delay=0, retries=2, proxy=None, cookies=None, 
+                 rate_limit=None, user_agent=None, headers=None, verify_ssl=False):
         self.base_url = base_url.rstrip('/')
+        self.threads = threads
         self.timeout = timeout
         self.delay = delay
         self.retries = retries
         self.verify_ssl = verify_ssl
-        self.logger = logging.getLogger(__name__)
-        
-        if adaptive_threads:
-            self.thread_pool = AdaptiveThreadPool(
-                initial_threads=threads,
-                min_threads=max(1, threads // 2),
-                max_threads=min(threads * 2, 50),
-                auto_adjust=True
-            )
-            self.logger.info("Adaptive threading enabled")
-        else:
-            self.thread_pool = AdaptiveThreadPool(
-                initial_threads=threads,
-                min_threads=threads,
-                max_threads=threads,
-                auto_adjust=False
-            )
-        
-        self.rate_limiter = AdaptiveRateLimiter(
-            initial_rate=rate_limit,
-            auto_detect=True
-        )
-        
-        self.connection_pool = SmartConnectionPool(max_connections=20)
-        
-        self.response_analyzer = ResponseAnalyzer()
-        self.content_extractor = ContentExtractor()
-        
-        self.default_headers = {
+        self.session = requests.Session()
+        default_headers = {
             'User-Agent': user_agent or 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
             'Accept-Encoding': 'gzip, deflate',
             'Connection': 'keep-alive'
         }
-        
         if headers:
             if isinstance(headers, str):
                 try:
-                    custom_headers = json.loads(headers)
-                    self.default_headers.update(custom_headers)
+                    headers = json.loads(headers)
                 except:
-                    pass
-        
-        self.proxy = {'http': proxy, 'https': proxy} if proxy else None
-        self.cookies = self._parse_cookies(cookies) if cookies else None
-        
-        self.request_queue = Queue()
-        self.results = {
-            'found': [],
-            'redirects': [],
-            'forbidden': [],
-            'unauthorized': [],
-            'errors': [],
-            'interesting': [],
-            'wildcards': [],
-            'login_pages': [],
-            'admin_pages': [],
-            'api_endpoints': []
-        }
-        
+                    headers = {}
+            default_headers.update(headers)
+        self.session.headers.update(default_headers)
+        if proxy:
+            self.session.proxies = {'http': proxy, 'https': proxy}
+        if cookies:
+            if isinstance(cookies, str):
+                cookies = self._parse_cookies(cookies)
+            for name, value in cookies.items():
+                self.session.cookies.set(name, value)
+        self.rate_limiter = None
+        if rate_limit:
+            if rate_limit >= 1:
+                self.rate_limiter = RateLimiter(requests_per_second=rate_limit)
+            else:
+                self.rate_limiter = RateLimiter(requests_per_minute=int(60 / rate_limit))
+        self.stats = {'total_requests': 0, 'successful_requests': 0, 'failed_requests': 0, 
+                     'rate_limited_requests': 0, 'total_response_time': 0, 'average_response_time': 0}
         self.lock = threading.Lock()
-        
-        self.stats = {
-            'total_requests': 0,
-            'successful_requests': 0,
-            'failed_requests': 0,
-            'soft_404s': 0,
-            'wildcards': 0,
-            'interesting_findings': 0
-        }
+        self.request_queue = Queue()
+        self.results = {'found': [], 'redirects': [], 'forbidden': [], 'unauthorized': [], 'errors': [], 'rate_limited': []}
+        self.logger = logging.getLogger(__name__)
     
-    def _parse_cookies(self, cookie_string: str) -> Dict:
-        """Parse cookie string"""
+    def _parse_cookies(self, cookie_string):
         cookies = {}
         for cookie in cookie_string.split(';'):
             if '=' in cookie:
@@ -117,298 +117,103 @@ class EnhancedPathBuster:
                 cookies[name] = value
         return cookies
     
-    def bust(self, paths: List[str], output) -> Dict:
-        """Execute path enumeration with adaptive optimization"""
+    def bust(self, paths, output):
         total_paths = len(paths)
-        self.logger.info(f"Starting scan of {total_paths} paths")
-        
-        output.create_progress_bar(total_paths, "Adaptive scanning")
-        
+        output.create_progress_bar(total_paths, "Testing paths")
         scan_requests = [ScanRequest(path=path) for path in paths]
         for req in scan_requests:
             self.request_queue.put(req)
-        
-        completed_requests = 0
-        
-        while not self.request_queue.empty() or completed_requests < total_paths:
-            current_threads = self.thread_pool.get_current_threads()
-            
-            active_workers = min(current_threads, self.request_queue.qsize() + 1)
-            
-            with ThreadPoolExecutor(max_workers=active_workers) as executor:
-                futures = []
-                
-                for _ in range(active_workers):
-                    if not self.request_queue.empty():
-                        future = executor.submit(self._worker, output)
-                        futures.append(future)
-                
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                        completed_requests += 1
-                    except Exception as e:
-                        self.logger.error(f"Worker error: {e}")
-            
-            if completed_requests < total_paths and not self.request_queue.empty():
-                time.sleep(0.1)
-        
+        def worker():
+            while True:
+                try:
+                    req = self.request_queue.get_nowait()
+                except Empty:
+                    break
+                self._process_request(req, output)
+                self.request_queue.task_done()
+        with ThreadPoolExecutor(max_workers=self.threads) as executor:
+            futures = [executor.submit(worker) for _ in range(self.threads)]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    self.logger.error(f"Worker error: {e}")
         output.complete_progress()
-        
-        self._post_process_results()
-        
-        all_stats = {
-            'results': self.results,
-            'statistics': self._get_comprehensive_stats(),
-            'target_url': self.base_url,
-            'total_paths_tested': total_paths
-        }
-        
-        return all_stats
+        if self.stats['successful_requests'] > 0:
+            self.stats['average_response_time'] = self.stats['total_response_time'] / self.stats['successful_requests']
+        return {'results': self.results, 'statistics': self.stats, 'target_url': self.base_url, 'total_paths_tested': total_paths}
     
-    def _worker(self, output):
-        """Worker thread for processing requests"""
-        try:
-            req = self.request_queue.get_nowait()
-        except Empty:
-            return
-        
-        try:
-            self._process_request(req, output)
-        finally:
-            self.request_queue.task_done()
-    
-    def _process_request(self, req: ScanRequest, output):
-        """Process a single request with retry logic"""
-        session = self.connection_pool.get_session()
-        
-        session.headers.update(self.default_headers)
-        if self.proxy:
-            session.proxies.update(self.proxy)
-        if self.cookies:
-            for name, value in self.cookies.items():
-                session.cookies.set(name, value)
-        
+    def _process_request(self, req, output):
         for attempt in range(self.retries + 1):
             try:
-                self.rate_limiter.wait()
-                
+                if self.rate_limiter:
+                    self.rate_limiter.wait()
                 if self.delay > 0:
                     time.sleep(self.delay)
-                
+                with self.lock:
+                    self.stats['total_requests'] += 1
                 start_time = time.time()
-                
-                response = session.get(
-                    self.base_url + req.path,
-                    timeout=self.timeout,
-                    allow_redirects=False,
-                    verify=self.verify_ssl
-                )
-                
+                response = self.session.get(self.base_url + req.path, timeout=self.timeout, allow_redirects=False, verify=self.verify_ssl)
                 response_time = time.time() - start_time
+                with self.lock:
+                    self.stats['successful_requests'] += 1
+                    self.stats['total_response_time'] += response_time
+                req.status = ScanStatus.COMPLETED
                 req.response_time = response_time
-                
-                if self.rate_limiter.detect_rate_limit(response.status_code, response.headers):
-                    self.thread_pool.record_request(response_time, False, 'rate_limit')
-                    if attempt < self.retries:
-                        continue
-                    else:
-                        break
-                
-                self.thread_pool.record_request(response_time, True)
-                self.rate_limiter.record_success()
-                
                 self._process_response(req.path, response, response_time, output)
-                
                 break
-                
             except requests.exceptions.Timeout:
-                self.thread_pool.record_request(self.timeout, False, 'timeout')
-                
+                req.status = ScanStatus.FAILED
                 if attempt >= self.retries:
                     with self.lock:
                         self.stats['failed_requests'] += 1
-                        self.results['errors'].append({
-                            'path': req.path,
-                            'error': 'Timeout'
-                        })
+                        self.results['errors'].append({'path': req.path, 'error': 'Timeout'})
                 break
-                
-            except requests.exceptions.ConnectionError as e:
-                self.thread_pool.record_request(0, False, 'connection')
-                
+            except requests.exceptions.TooManyRedirects:
+                req.status = ScanStatus.FAILED
                 if attempt >= self.retries:
                     with self.lock:
                         self.stats['failed_requests'] += 1
-                        self.results['errors'].append({
-                            'path': req.path,
-                            'error': f'Connection error: {str(e)}'
-                        })
+                        self.results['errors'].append({'path': req.path, 'error': 'Too many redirects'})
                 break
-                
             except Exception as e:
-                self.thread_pool.record_request(0, False, 'unknown')
-                
+                req.status = ScanStatus.FAILED
+                with self.lock:
+                    self.stats['failed_requests'] += 1
                 if attempt >= self.retries:
-                    with self.lock:
-                        self.stats['failed_requests'] += 1
-                        self.results['errors'].append({
-                            'path': req.path,
-                            'error': str(e)
-                        })
+                    self.results['errors'].append({'path': req.path, 'error': str(e)})
                 break
-        
-        with self.lock:
-            self.stats['total_requests'] += 1
-        
         output.update_progress(self.stats['total_requests'])
     
-    def _process_response(self, path: str, response: requests.Response, 
-                         response_time: float, output):
-        """Process and analyze response"""
-        
-        analysis, classification = self.response_analyzer.analyze_response(
-            path=path,
-            status_code=response.status_code,
-            content=response.content,
-            headers=dict(response.headers),
-            response_time=response_time
-        )
-        
-        result = {
-            'path': path,
-            'status': response.status_code,
-            'size': len(response.content),
-            'response_time': response_time,
-            'url': self.base_url + path,
-            'headers': dict(response.headers),
-            'content_type': response.headers.get('Content-Type', ''),
-            'server': response.headers.get('Server', ''),
-            'classification': {
-                'is_404': classification.is_404,
-                'is_soft_404': classification.is_soft_404,
-                'is_wildcard': classification.is_wildcard,
-                'is_login': classification.is_login_page,
-                'is_admin': classification.is_admin_page,
-                'is_api': classification.is_api_endpoint,
-                'confidence': classification.confidence
-            }
-        }
-        
+    def _process_response(self, path, response, response_time, output):
+        result = {'path': path, 'status': response.status_code, 'size': len(response.content), 'response_time': response_time,
+                 'url': self.base_url + path, 'headers': dict(response.headers), 'cookies': dict(response.cookies),
+                 'content_type': response.headers.get('Content-Type', ''), 'server': response.headers.get('Server', '')}
         if 'text/html' in result['content_type']:
             try:
                 from bs4 import BeautifulSoup
                 soup = BeautifulSoup(response.text, 'html.parser')
                 if soup.title and soup.title.string:
-                    result['title'] = soup.title.string.strip()[:200]
-                
-                forms = self.content_extractor.extract_forms(response.text)
-                if forms:
-                    result['forms'] = forms[:5]
-                
-                comments = self.content_extractor.extract_comments(response.text)
-                if comments:
-                    result['comments'] = comments[:10]
+                    result['title'] = soup.title.string.strip()
             except:
                 pass
-        
-        secrets = self.content_extractor.extract_secrets(response.text)
-        if secrets:
-            result['potential_secrets'] = secrets[:5]
-            analysis['interesting'] = True
-            analysis['reasons'].append(f"Found {len(secrets)} potential secrets")
-        
-        with self.lock:
-            if classification.is_soft_404:
-                self.stats['soft_404s'] += 1
-            
-            if classification.is_wildcard:
-                self.stats['wildcards'] += 1
-                self.results['wildcards'].append(result)
-            
-            elif response.status_code == 200 and not classification.is_soft_404:
-                self.results['found'].append(result)
-                self.stats['successful_requests'] += 1
-                
-                if classification.is_login_page:
-                    self.results['login_pages'].append(result)
-                    self.stats['interesting_findings'] += 1
-                    output.found(path, response.status_code, len(response.content), 
-                               response_time, result['content_type'], "[LOGIN]")
-                
-                elif classification.is_admin_page:
-                    self.results['admin_pages'].append(result)
-                    self.stats['interesting_findings'] += 1
-                    output.found(path, response.status_code, len(response.content), 
-                               response_time, result['content_type'], "[ADMIN]")
-                
-                elif classification.is_api_endpoint:
-                    self.results['api_endpoints'].append(result)
-                    self.stats['interesting_findings'] += 1
-                    output.found(path, response.status_code, len(response.content), 
-                               response_time, result['content_type'], "[API]")
-                
-                elif analysis.get('interesting'):
-                    self.results['interesting'].append(result)
-                    self.stats['interesting_findings'] += 1
-                    reasons = ' | '.join(analysis.get('reasons', [])[:2])
-                    output.found(path, response.status_code, len(response.content), 
-                               response_time, result['content_type'], f"[!] {reasons}")
-                else:
-                    output.found(path, response.status_code, len(response.content), 
-                               response_time, result['content_type'])
-            
-            elif response.status_code in [301, 302, 307, 308]:
-                result['redirect_location'] = response.headers.get('Location', '')
-                self.results['redirects'].append(result)
-                output.found(path, response.status_code, len(response.content), 
-                           response_time, result['content_type'])
-            
-            elif response.status_code == 403:
-                self.results['forbidden'].append(result)
-                output.found(path, response.status_code, len(response.content), 
-                           response_time, result['content_type'])
-            
-            elif response.status_code == 401:
-                self.results['unauthorized'].append(result)
-                output.found(path, response.status_code, len(response.content), 
-                           response_time, result['content_type'])
+        if response.status_code == 200:
+            self.results['found'].append(result)
+            output.found(path, response.status_code, len(response.content), response_time, result['content_type'])
+        elif response.status_code in [301, 302, 307, 308]:
+            result['redirect_location'] = response.headers.get('Location', '')
+            self.results['redirects'].append(result)
+            output.found(path, response.status_code, len(response.content), response_time, result['content_type'])
+        elif response.status_code == 403:
+            self.results['forbidden'].append(result)
+            output.found(path, response.status_code, len(response.content), response_time, result['content_type'])
+        elif response.status_code == 401:
+            self.results['unauthorized'].append(result)
+            output.found(path, response.status_code, len(response.content), response_time, result['content_type'])
+        interesting_headers = ['X-Powered-By', 'X-AspNet-Version', 'X-AspNetMvc-Version', 'X-Debug-Token', 'X-Generator']
+        for header in interesting_headers:
+            if header in response.headers:
+                result[header.lower()] = response.headers[header]
     
-    def _post_process_results(self):
-        """Post-process results for additional insights"""
-        similar_groups = self.response_analyzer.get_similar_responses(min_count=3)
-        
-        if similar_groups:
-            self.logger.info(f"Found {len(similar_groups)} groups of similar responses")
-            self.results['similar_response_groups'] = similar_groups
-    
-    def _get_comprehensive_stats(self) -> Dict:
-        """Get comprehensive statistics"""
-        base_stats = {
-            'total_requests': self.stats['total_requests'],
-            'successful_requests': self.stats['successful_requests'],
-            'failed_requests': self.stats['failed_requests'],
-            'soft_404s': self.stats['soft_404s'],
-            'wildcards': self.stats['wildcards'],
-            'interesting_findings': self.stats['interesting_findings'],
-            'login_pages_found': len(self.results['login_pages']),
-            'admin_pages_found': len(self.results['admin_pages']),
-            'api_endpoints_found': len(self.results['api_endpoints'])
-        }
-        
-        thread_stats = self.thread_pool.get_statistics()
-        rate_stats = self.rate_limiter.get_statistics()
-        pool_stats = self.connection_pool.get_statistics()
-        analyzer_stats = self.response_analyzer.get_statistics()
-        
-        return {
-            **base_stats,
-            'threading': thread_stats,
-            'rate_limiting': rate_stats,
-            'connection_pool': pool_stats,
-            'response_analysis': analyzer_stats
-        }
-    
-    def cleanup(self):
-        """Cleanup resources"""
-        self.connection_pool.cleanup()
+    def get_statistics(self):
+        return self.stats

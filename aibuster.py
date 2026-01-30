@@ -4,9 +4,9 @@ import sys
 import signal
 import os
 from colorama import Fore, Style, init
-from ai import EnhancedAIPathGenerator
-from recon import AdvancedWebRecon
-from buster import EnhancedPathBuster
+from recon import WebRecon
+from ai import AIPathGenerator
+from buster import PathBuster
 from output import OutputFormatter
 try:
     from plugins import PluginManager
@@ -173,7 +173,7 @@ def main():
         elif args.plugins and not PLUGINS_AVAILABLE:
             output.warning("Plugins requested but not available. Install plugins.py to use this feature.")
         output.system_status("PERFORMING RECONNAISSANCE", "recon_start")
-        recon = AdvancedWebRecon(args.url, args.timeout, args.user_agent, args.proxy, args.cookies)
+        recon = WebRecon(args.url, args.timeout, args.user_agent, args.proxy, args.cookies)
         recon_data = recon.analyze()
         if args.verbose:
             output.recon_summary(recon_data)
@@ -189,7 +189,7 @@ def main():
                 sys.exit(1)
         elif not args.no_ai:
             output.system_status(f"GENERATING AI PATHS - MODEL: {args.ai_model.upper()}", "ai_generation")
-            ai_gen = EnhancedAIPathGenerator(model=args.ai_model, api_key=args.api_key)
+            ai_gen = AIPathGenerator(model=args.ai_model, api_key=args.api_key)
             paths = ai_gen.generate_paths(recon_data, depth=args.depth)
             output.success(f"Generated {len(paths)} intelligent paths")
         else:
@@ -206,7 +206,7 @@ def main():
         paths = sorted(list(set(paths)))
         output.info(f"Total unique paths to test: {len(paths)}")
         output.system_status(f"INITIATING PATH ENUMERATION - THREADS: {args.threads}", "scan_start")
-        buster = EnhancedPathBuster(args.url, args.threads, args.timeout, args.delay, retries=args.retries, proxy=args.proxy,
+        buster = PathBuster(args.url, args.threads, args.timeout, args.delay, retries=args.retries, proxy=args.proxy,
                           cookies=args.cookies, rate_limit=args.rate_limit, user_agent=args.user_agent, headers=args.headers)
         results = buster.bust(paths, output)
         if plugin_manager:

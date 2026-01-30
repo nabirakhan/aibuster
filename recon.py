@@ -1,534 +1,487 @@
-#!/usr/bin/env python3
-import re
 import requests
-import hashlib
-import json
-from typing import Dict, List, Optional, Set, Tuple
-from urllib.parse import urlparse
+import ssl
 from bs4 import BeautifulSoup
-import logging
-from dataclasses import dataclass, field
+from urllib.parse import urlparse, urljoin
+import re
+import json
+from typing import Dict, List, Set, Tuple
+import time
+import warnings
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.poolmanager import PoolManager
+from requests.packages.urllib3.util import ssl_
 
-@dataclass
-class TechnologyFingerprint:
-    """Detailed technology fingerprint"""
-    name: str
-    version: Optional[str] = None
-    confidence: float = 0.0
-    indicators: List[str] = field(default_factory=list)
-    cpe: Optional[str] = None
+# Suppress warnings
+warnings.filterwarnings('ignore')
 
-@dataclass
-class WAFInfo:
-    """WAF detection information"""
-    detected: bool = False
-    name: Optional[str] = None
-    confidence: float = 0.0
-    indicators: List[str] = field(default_factory=list)
-
-class AdvancedWebRecon:
-    """Enhanced reconnaissance with advanced detection capabilities"""
+class SSLAdapter(HTTPAdapter):
+    """Custom SSL adapter for TLS handling"""
     
-    def __init__(self, url: str, timeout: int = 10, user_agent: Optional[str] = None,
-                 proxy: Optional[str] = None, cookies: Optional[str] = None):
-        self.url = url.rstrip('/')
+    def init_poolmanager(self, connections, maxsize, block=False, **kwargs):
+        ctx = ssl_.create_urllib3_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        self.poolmanager = PoolManager(
+            num_pools=connections,
+            maxsize=maxsize,
+            block=block,
+            ssl_context=ctx
+        )
+
+class WebRecon:
+    """Enhanced web reconnaissance class"""
+    
+    def __init__(self, url, timeout=10, user_agent=None, proxy=None, cookies=None):
+        self.url = self._normalize_url(url)
         self.timeout = timeout
         self.session = requests.Session()
-        self.logger = logging.getLogger(__name__)
         
+        # Custom SSL context
+        self.session.mount('https://', SSLAdapter())
+        
+        # Configure headers
         headers = {
             'User-Agent': user_agent or 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
             'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive'
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
         }
         self.session.headers.update(headers)
         
+        # Configure proxy if provided
         if proxy:
-            self.session.proxies = {'http': proxy, 'https': proxy}
+            self.session.proxies = {
+                'http': proxy,
+                'https': proxy
+            }
         
+        # Configure cookies if provided
         if cookies:
-            self._set_cookies(cookies)
+            self._parse_cookies(cookies)
         
-        self.fingerprints: List[TechnologyFingerprint] = []
-        self.waf_info: Optional[WAFInfo] = None
-        self.cdn_info: Optional[str] = None
+        # Rate limiting
+        self.request_delay = 0
+        self.last_request = 0
     
-    def _set_cookies(self, cookies: str):
-        """Set cookies from string"""
-        for cookie in cookies.split(';'):
+    def _normalize_url(self, url):
+        """Normalize URL"""
+        url = url.strip()
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        return url.rstrip('/')
+    
+    def _parse_cookies(self, cookie_string):
+        """Parse cookie string into session"""
+        for cookie in cookie_string.split(';'):
             if '=' in cookie:
                 name, value = cookie.strip().split('=', 1)
                 self.session.cookies.set(name, value)
     
-    def analyze(self) -> Dict:
+    def _respect_rate_limit(self):
+        """Respect rate limiting if configured"""
+        if self.request_delay > 0:
+            elapsed = time.time() - self.last_request
+            if elapsed < self.request_delay:
+                time.sleep(self.request_delay - elapsed)
+            self.last_request = time.time()
+    
+    def analyze(self, max_pages=5):
         """Perform comprehensive reconnaissance"""
-        result = {
+        
+        data = {
             'url': self.url,
-            'tech': [],
-            'server': '',
-            'title': '',
-            'keywords': [],
-            'status_code': 0,
+            'links': [],
+            'external_links': [],
+            'scripts': [],
+            'stylesheets': [],
+            'images': [],
+            'forms': [],
+            'inputs': [],
+            'meta_tags': [],
+            'keywords': set(),
+            'tech': set(),
             'headers': {},
-            'fingerprints': [],
-            'waf': None,
-            'cdn': None,
-            'version_info': {},
-            'cms': None,
-            'frameworks': [],
-            'database_hints': [],
-            'api_endpoints': [],
-            'security_headers': {}
+            'cookies': {},
+            'security_headers': {},
+            'server_info': {},
+            'content': '',
+            'robots_txt': '',
+            'sitemap': '',
+            'subdomains': set(),
+            'emails': set(),
+            'phone_numbers': set(),
+            'social_links': set(),
+            'status_code': 0,
+            'response_time': 0,
+            'page_title': '',
+            'page_size': 0,
+            'word_count': 0,
+            'language': ''
         }
         
         try:
-            self.logger.info(f"Starting advanced reconnaissance on {self.url}")
-            
-            response = self.session.get(self.url, timeout=self.timeout, verify=False, allow_redirects=True)
-            
-            result['status_code'] = response.status_code
-            result['headers'] = dict(response.headers)
-            result['server'] = response.headers.get('Server', 'Unknown')
-            
-            self._detect_waf(response)
-            result['waf'] = {
-                'detected': self.waf_info.detected,
-                'name': self.waf_info.name,
-                'confidence': self.waf_info.confidence,
-                'indicators': self.waf_info.indicators
-            } if self.waf_info else None
-            
-            self._detect_cdn(response)
-            result['cdn'] = self.cdn_info
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            if soup.title:
-                result['title'] = soup.title.string.strip() if soup.title.string else ''
-            
-            result['keywords'] = self._extract_keywords(soup, response.text)
-            
-            self._fingerprint_technologies(response, soup)
-            
-            result['tech'] = list(set([fp.name for fp in self.fingerprints]))
-            result['fingerprints'] = [
-                {
-                    'name': fp.name,
-                    'version': fp.version,
-                    'confidence': fp.confidence,
-                    'indicators': fp.indicators
-                }
-                for fp in self.fingerprints
-            ]
-            
-            result['version_info'] = {fp.name: fp.version for fp in self.fingerprints if fp.version}
-            
-            result['cms'] = self._detect_cms(response, soup)
-            result['frameworks'] = self._detect_frameworks(response, soup)
-            result['database_hints'] = self._detect_database_hints(response, soup)
-            result['api_endpoints'] = self._discover_api_endpoints(soup, response.text)
-            result['security_headers'] = self._analyze_security_headers(response.headers)
-            
-            self.logger.info(f"Reconnaissance complete. Detected {len(result['tech'])} technologies")
-            
-        except requests.exceptions.Timeout:
-            self.logger.error(f"Timeout connecting to {self.url}")
-            result['error'] = 'Timeout'
-        except requests.exceptions.ConnectionError:
-            self.logger.error(f"Connection error to {self.url}")
-            result['error'] = 'Connection error'
-        except Exception as e:
-            self.logger.error(f"Error during reconnaissance: {e}")
-            result['error'] = str(e)
-        
-        return result
-    
-    def _detect_waf(self, response: requests.Response):
-        """Detect Web Application Firewall"""
-        waf_signatures = {
-            'Cloudflare': {
-                'headers': ['cf-ray', 'cf-cache-status', '__cfduid'],
-                'cookies': ['__cfduid', '__cflb'],
-                'body_patterns': [r'<title>Attention Required! \| Cloudflare</title>']
-            },
-            'AWS WAF': {
-                'headers': ['x-amzn-requestid', 'x-amz-cf-id'],
-                'body_patterns': [r'AWS.*?Error', r'Request blocked']
-            },
-            'Akamai': {
-                'headers': ['x-akamai-.*?', 'akamai-'],
-                'body_patterns': [r'Reference #.*?Akamai']
-            },
-            'Incapsula': {
-                'headers': ['x-cdn', 'x-iinfo'],
-                'cookies': ['incap_ses_', 'visid_incap_'],
-                'body_patterns': [r'_Incapsula_Resource']
-            },
-            'ModSecurity': {
-                'headers': ['server'],
-                'body_patterns': [r'ModSecurity', r'mod_security']
-            },
-            'Sucuri': {
-                'headers': ['x-sucuri-id', 'x-sucuri-cache'],
-                'body_patterns': [r'Sucuri WebSite Firewall']
-            },
-            'F5 BIG-IP': {
-                'headers': ['x-wa-info'],
-                'cookies': ['TS[a-z0-9]{6}', 'BIGipServer'],
-                'body_patterns': []
-            },
-            'Imperva': {
-                'cookies': ['incap_ses_'],
-                'body_patterns': [r'Imperva']
-            }
-        }
-        
-        detected_wafs = []
-        
-        for waf_name, signatures in waf_signatures.items():
-            confidence = 0.0
-            indicators = []
-            
-            for header in signatures.get('headers', []):
-                for resp_header in response.headers.keys():
-                    if re.search(header, resp_header, re.IGNORECASE):
-                        confidence += 0.4
-                        indicators.append(f"Header: {resp_header}")
-            
-            for cookie_pattern in signatures.get('cookies', []):
-                for cookie_name in response.cookies.keys():
-                    if re.search(cookie_pattern, cookie_name, re.IGNORECASE):
-                        confidence += 0.3
-                        indicators.append(f"Cookie: {cookie_name}")
-            
-            for pattern in signatures.get('body_patterns', []):
-                if re.search(pattern, response.text, re.IGNORECASE):
-                    confidence += 0.5
-                    indicators.append(f"Body pattern: {pattern}")
-            
-            if confidence > 0:
-                detected_wafs.append((waf_name, confidence, indicators))
-        
-        if detected_wafs:
-            detected_wafs.sort(key=lambda x: x[1], reverse=True)
-            waf_name, confidence, indicators = detected_wafs[0]
-            
-            self.waf_info = WAFInfo(
-                detected=True,
-                name=waf_name,
-                confidence=min(confidence, 1.0),
-                indicators=indicators
+            # Fetch homepage with timing
+            start_time = time.time()
+            response = self.session.get(
+                self.url,
+                timeout=self.timeout,
+                allow_redirects=True,
+                verify=False
             )
-            self.logger.info(f"WAF detected: {waf_name} (confidence: {confidence:.2f})")
-        else:
-            self.waf_info = WAFInfo(detected=False)
-    
-    def _detect_cdn(self, response: requests.Response):
-        """Detect CDN provider"""
-        cdn_indicators = {
-            'Cloudflare': ['cf-ray', 'cf-cache-status'],
-            'Fastly': ['x-served-by', 'fastly'],
-            'Akamai': ['x-akamai', 'akamai-'],
-            'CloudFront': ['x-amz-cf-', 'cloudfront'],
-            'KeyCDN': ['x-edge-', 'keycdn'],
-            'StackPath': ['x-sp-', 'stackpath'],
-            'BunnyCDN': ['cdn-pullzone', 'bunnycdn'],
-            'Imperva': ['x-cdn'],
-            'Sucuri': ['x-sucuri-cache']
-        }
-        
-        for cdn_name, headers in cdn_indicators.items():
-            for header in headers:
-                for resp_header in response.headers.keys():
-                    if header.lower() in resp_header.lower():
-                        self.cdn_info = cdn_name
-                        self.logger.info(f"CDN detected: {cdn_name}")
-                        return
-    
-    def _fingerprint_technologies(self, response: requests.Response, soup: BeautifulSoup):
-        """Comprehensive technology fingerprinting"""
-        
-        self._fingerprint_from_headers(response.headers)
-        self._fingerprint_from_meta_tags(soup)
-        self._fingerprint_from_scripts(soup)
-        self._fingerprint_from_html(response.text, soup)
-        self._fingerprint_from_cookies(response.cookies)
-    
-    def _fingerprint_from_headers(self, headers: dict):
-        """Fingerprint from HTTP headers"""
-        server = headers.get('Server', '')
-        powered_by = headers.get('X-Powered-By', '')
-        
-        version_patterns = {
-            'nginx': r'nginx/([\d.]+)',
-            'Apache': r'Apache/([\d.]+)',
-            'IIS': r'Microsoft-IIS/([\d.]+)',
-            'PHP': r'PHP/([\d.]+)',
-            'ASP.NET': r'ASP\.NET',
-            'Express': r'Express'
-        }
-        
-        for tech, pattern in version_patterns.items():
-            combined = f"{server} {powered_by}"
-            match = re.search(pattern, combined, re.IGNORECASE)
-            if match:
-                version = match.group(1) if match.groups() else None
-                self.fingerprints.append(TechnologyFingerprint(
-                    name=tech,
-                    version=version,
-                    confidence=0.95,
-                    indicators=[f"Server header: {server or powered_by}"]
-                ))
-        
-        if 'Jetty' in server:
-            self.fingerprints.append(TechnologyFingerprint(
-                name='Jetty',
-                confidence=0.9,
-                indicators=['Server header']
-            ))
-        
-        if 'Tomcat' in server or 'Coyote' in server:
-            self.fingerprints.append(TechnologyFingerprint(
-                name='Apache Tomcat',
-                confidence=0.9,
-                indicators=['Server header']
-            ))
-    
-    def _fingerprint_from_meta_tags(self, soup: BeautifulSoup):
-        """Fingerprint from meta tags"""
-        generators = {
-            'WordPress': r'WordPress ([\d.]+)',
-            'Drupal': r'Drupal ([\d.]+)',
-            'Joomla': r'Joomla!? ([\d.]+)',
-            'Magento': r'Magento',
-            'Shopify': r'Shopify',
-            'Wix': r'Wix\.com',
-            'Squarespace': r'Squarespace',
-            'PrestaShop': r'PrestaShop'
-        }
-        
-        generator_tag = soup.find('meta', attrs={'name': 'generator'})
-        if generator_tag and generator_tag.get('content'):
-            content = generator_tag['content']
+            response_time = time.time() - start_time
             
-            for tech, pattern in generators.items():
-                match = re.search(pattern, content, re.IGNORECASE)
-                if match:
-                    version = match.group(1) if match.groups() else None
-                    self.fingerprints.append(TechnologyFingerprint(
-                        name=tech,
-                        version=version,
-                        confidence=0.98,
-                        indicators=['Generator meta tag']
-                    ))
-    
-    def _fingerprint_from_scripts(self, soup: BeautifulSoup):
-        """Fingerprint from JavaScript libraries"""
-        script_patterns = {
-            'jQuery': r'jquery[.-]?([\d.]+)?(\.min)?\.js',
-            'React': r'react[.-]?([\d.]+)?(\.min)?\.js',
-            'Vue.js': r'vue[.-]?([\d.]+)?(\.min)?\.js',
-            'Angular': r'angular[.-]?([\d.]+)?(\.min)?\.js',
-            'Bootstrap': r'bootstrap[.-]?([\d.]+)?(\.min)?\.js',
-            'Next.js': r'_next/static',
-            'Nuxt.js': r'_nuxt',
-            'Gatsby': r'gatsby',
-            'D3.js': r'd3[.-]?([\d.]+)?(\.min)?\.js'
-        }
-        
-        scripts = soup.find_all('script', src=True)
-        
-        for script in scripts:
-            src = script.get('src', '')
+            data['status_code'] = response.status_code
+            data['response_time'] = response_time
+            data['page_size'] = len(response.content)
+            data['headers'] = dict(response.headers)
+            data['cookies'] = dict(response.cookies)
             
-            for tech, pattern in script_patterns.items():
-                match = re.search(pattern, src, re.IGNORECASE)
-                if match:
-                    version = match.group(1) if match.groups() and match.group(1) else None
-                    
-                    existing = next((fp for fp in self.fingerprints if fp.name == tech), None)
-                    if not existing:
-                        self.fingerprints.append(TechnologyFingerprint(
-                            name=tech,
-                            version=version,
-                            confidence=0.9,
-                            indicators=[f'Script: {src[:50]}']
-                        ))
+            # Parse HTML
+            soup = BeautifulSoup(response.text, 'html.parser')
+            data['content'] = response.text
+            
+            # Extract page title
+            if soup.title:
+                data['page_title'] = soup.title.string
+            
+            # Extract meta tags
+            for meta in soup.find_all('meta'):
+                meta_data = {}
+                for attr in meta.attrs:
+                    meta_data[attr] = meta[attr]
+                data['meta_tags'].append(meta_data)
+                
+                # Extract keywords from meta tags
+                if meta.get('name') == 'keywords' and meta.get('content'):
+                    keywords = meta['content'].split(',')
+                    data['keywords'].update([k.strip().lower() for k in keywords])
+                if meta.get('name') == 'description' and meta.get('content'):
+                    data['keywords'].update(re.findall(r'\b\w{4,}\b', meta['content'].lower()))
+            
+            # Extract all links
+            self._extract_links(soup, data)
+            
+            # Extract scripts and styles
+            self._extract_resources(soup, data)
+            
+            # Extract forms and inputs
+            self._extract_forms(soup, data)
+            
+            # Extract text content and analyze
+            self._analyze_content(soup, data)
+            
+            # Detect technologies
+            self._detect_technologies(response, soup, data)
+            
+            # Check security headers
+            self._check_security_headers(response.headers, data)
+            
+            # Extract server information
+            self._extract_server_info(response.headers, data)
+            
+            # Look for additional files
+            self._check_additional_files(data)
+            
+            # Extract contact information
+            self._extract_contact_info(response.text, data)
+            
+            # Convert sets to lists for JSON serialization
+            data['keywords'] = list(data['keywords'])
+            data['tech'] = list(data['tech'])
+            data['subdomains'] = list(data['subdomains'])
+            data['emails'] = list(data['emails'])
+            data['phone_numbers'] = list(data['phone_numbers'])
+            data['social_links'] = list(data['social_links'])
+            
+            # Clean up
+            data['links'] = list(set(data['links']))
+            data['scripts'] = list(set(data['scripts']))
+            
+        except Exception as e:
+            data['error'] = str(e)
+        
+        return data
     
-    def _fingerprint_from_html(self, html: str, soup: BeautifulSoup):
-        """Fingerprint from HTML patterns"""
+    def _extract_links(self, soup, data):
+        """Extract links from page"""
+        base_domain = urlparse(self.url).netloc
         
-        if soup.find('meta', attrs={'name': 'shopify-checkout-api-token'}):
-            self.fingerprints.append(TechnologyFingerprint(
-                name='Shopify',
-                confidence=1.0,
-                indicators=['Shopify checkout token']
-            ))
-        
-        if re.search(r'wp-content', html, re.IGNORECASE):
-            confidence = 0.95 if soup.find('link', href=re.compile(r'wp-includes')) else 0.7
-            self.fingerprints.append(TechnologyFingerprint(
-                name='WordPress',
-                confidence=confidence,
-                indicators=['wp-content in HTML']
-            ))
-        
-        if re.search(r'/sites/default/files', html) or re.search(r'Drupal\.settings', html):
-            self.fingerprints.append(TechnologyFingerprint(
-                name='Drupal',
-                confidence=0.9,
-                indicators=['Drupal patterns in HTML']
-            ))
-        
-        laravel_patterns = [r'laravel_session', r'XSRF-TOKEN', r'csrf-token']
-        if any(re.search(p, html, re.IGNORECASE) for p in laravel_patterns):
-            self.fingerprints.append(TechnologyFingerprint(
-                name='Laravel',
-                confidence=0.85,
-                indicators=['Laravel patterns']
-            ))
-        
-        if re.search(r'__NEXT_DATA__', html):
-            self.fingerprints.append(TechnologyFingerprint(
-                name='Next.js',
-                confidence=0.95,
-                indicators=['__NEXT_DATA__ found']
-            ))
+        for link in soup.find_all('a', href=True):
+            href = link['href'].strip()
+            
+            if href.startswith('#'):
+                continue
+            
+            # Resolve relative URLs
+            if href.startswith('/'):
+                full_url = urljoin(self.url, href)
+                data['links'].append(href)
+                
+                # Extract keywords from path
+                path_parts = href.strip('/').split('/')
+                data['keywords'].update([p.lower() for p in path_parts if len(p) > 2])
+                
+                # Check for subdomains
+                parsed = urlparse(full_url)
+                if parsed.netloc and parsed.netloc != base_domain:
+                    subdomain = parsed.netloc.replace(f'.{base_domain}', '')
+                    if subdomain and subdomain != base_domain:
+                        data['subdomains'].add(subdomain)
+            
+            elif href.startswith('http'):
+                data['external_links'].append(href)
+            
+            # Extract link text as keywords
+            if link.text:
+                words = re.findall(r'\b\w{4,}\b', link.text.lower())
+                data['keywords'].update(words)
     
-    def _fingerprint_from_cookies(self, cookies):
-        """Fingerprint from cookies"""
-        cookie_patterns = {
-            'PHP': ['PHPSESSID', 'phpMyAdmin'],
-            'ASP.NET': ['ASP.NET_SessionId', 'ASPSESSIONID'],
-            'Java': ['JSESSIONID'],
-            'Laravel': ['laravel_session', 'XSRF-TOKEN'],
-            'Django': ['sessionid', 'csrftoken'],
-            'Express': ['connect.sid']
+    def _extract_resources(self, soup, data):
+        """Extract scripts, stylesheets, and images"""
+        # Scripts
+        for script in soup.find_all('script', src=True):
+            src = script['src']
+            data['scripts'].append(src)
+            
+            # Extract keywords from script paths
+            if src.startswith('/'):
+                parts = src.strip('/').split('/')
+                data['keywords'].update([p.lower() for p in parts if len(p) > 2])
+        
+        # Stylesheets
+        for link in soup.find_all('link', rel='stylesheet'):
+            if link.get('href'):
+                data['stylesheets'].append(link['href'])
+        
+        # Images
+        for img in soup.find_all('img', src=True):
+            data['images'].append(img['src'])
+    
+    def _extract_forms(self, soup, data):
+        """Extract forms and form inputs"""
+        for form in soup.find_all('form'):
+            form_data = {
+                'action': form.get('action', ''),
+                'method': form.get('method', 'get').upper(),
+                'inputs': []
+            }
+            
+            # Extract input fields
+            for inp in form.find_all(['input', 'textarea', 'select']):
+                input_data = {
+                    'type': inp.get('type', 'text'),
+                    'name': inp.get('name', ''),
+                    'value': inp.get('value', ''),
+                    'placeholder': inp.get('placeholder', '')
+                }
+                form_data['inputs'].append(input_data)
+            
+            data['forms'].append(form_data)
+    
+    def _analyze_content(self, soup, data):
+        """Analyze page content"""
+        # Get all text
+        text = soup.get_text()
+        
+        # Count words
+        words = re.findall(r'\b\w+\b', text)
+        data['word_count'] = len(words)
+        
+        # Extract more keywords
+        content_keywords = re.findall(r'\b\w{4,}\b', text.lower())
+        data['keywords'].update(content_keywords[:100])
+        
+        # Detect language (simple detection)
+        common_english = {'the', 'and', 'for', 'you', 'are', 'this', 'that'}
+        english_words = sum(1 for word in words[:100] if word.lower() in common_english)
+        data['language'] = 'English' if english_words > 10 else 'Unknown'
+    
+    def _detect_technologies(self, response, soup, data):
+        """Detect web technologies"""
+        headers = response.headers
+        content = response.text.lower()
+        html = str(soup).lower()
+        
+        # Check headers
+        if 'X-Powered-By' in headers:
+            data['tech'].add(headers['X-Powered-By'])
+        if 'Server' in headers:
+            data['tech'].add(headers['Server'])
+        
+        # Check meta tags
+        for meta in soup.find_all('meta'):
+            if meta.get('name') == 'generator':
+                data['tech'].add(meta.get('content', ''))
+        
+        # Framework detection
+        tech_patterns = {
+            'WordPress': ['wp-content', 'wp-includes', 'wordpress'],
+            'Django': ['csrfmiddlewaretoken', 'django'],
+            'Flask': ['flask', 'session'],
+            'Laravel': ['laravel', 'csrf-token'],
+            'Ruby on Rails': ['rails', 'ruby'],
+            'Express.js': ['express', 'node'],
+            'React': ['react', 'react-dom'],
+            'Vue.js': ['vue', 'vue.js'],
+            'Angular': ['angular', 'ng-'],
+            'jQuery': ['jquery'],
+            'Bootstrap': ['bootstrap'],
+            'Tailwind': ['tailwind'],
+            'PHP': ['.php', 'php/', '<?php'],
+            'ASP.NET': ['.aspx', '.asp', '__viewstate'],
+            'Java': ['jsp', 'servlet', 'java'],
+            'Python': ['python', 'django', 'flask'],
+            'Nginx': ['nginx'],
+            'Apache': ['apache'],
+            'IIS': ['microsoft-iis'],
+            'CloudFlare': ['cloudflare'],
+            'AWS': ['aws', 'amazon'],
+            'Google Analytics': ['google-analytics', 'ga.js'],
+            'Facebook Pixel': ['facebook', 'fbq('],
+            'Stripe': ['stripe.com'],
+            'PayPal': ['paypal']
         }
         
-        for tech, cookie_names in cookie_patterns.items():
-            for cookie_name in cookie_names:
-                if cookie_name in cookies:
-                    existing = next((fp for fp in self.fingerprints if fp.name == tech), None)
-                    if not existing:
-                        self.fingerprints.append(TechnologyFingerprint(
-                            name=tech,
-                            confidence=0.85,
-                            indicators=[f'Cookie: {cookie_name}']
-                        ))
-    
-    def _detect_cms(self, response: requests.Response, soup: BeautifulSoup) -> Optional[str]:
-        """Detect CMS with high confidence"""
-        cms_list = [fp.name for fp in self.fingerprints if fp.name in 
-                    ['WordPress', 'Drupal', 'Joomla', 'Magento', 'Shopify', 'PrestaShop']]
-        
-        return cms_list[0] if cms_list else None
-    
-    def _detect_frameworks(self, response: requests.Response, soup: BeautifulSoup) -> List[str]:
-        """Detect web frameworks"""
-        frameworks = [fp.name for fp in self.fingerprints if fp.name in 
-                     ['Laravel', 'Django', 'Express', 'ASP.NET', 'React', 'Vue.js', 'Angular', 'Next.js']]
-        
-        return frameworks
-    
-    def _detect_database_hints(self, response: requests.Response, soup: BeautifulSoup) -> List[str]:
-        """Detect database hints from errors or patterns"""
-        db_hints = []
-        
-        error_patterns = {
-            'MySQL': [r'mysql', r'SQL syntax.*?MySQL', r'mysqli'],
-            'PostgreSQL': [r'PostgreSQL', r'psql', r'pg_'],
-            'MSSQL': [r'Microsoft SQL Server', r'ODBC SQL Server', r'mssql'],
-            'Oracle': [r'ORA-\d+', r'Oracle.*?Error'],
-            'MongoDB': [r'MongoError', r'mongodb://'],
-            'Redis': [r'Redis', r'REDIS']
-        }
-        
-        html = response.text.lower()
-        
-        for db, patterns in error_patterns.items():
+        for tech, patterns in tech_patterns.items():
             for pattern in patterns:
-                if re.search(pattern, html, re.IGNORECASE):
-                    if db not in db_hints:
-                        db_hints.append(db)
+                if pattern in content or pattern in html:
+                    data['tech'].add(tech)
+                    break
         
-        return db_hints
+        # CMS detection
+        cms_patterns = {
+            'WordPress': True,  # Already checked
+            'Joomla': ['joomla', 'com_'],
+            'Drupal': ['drupal', 'sites/all'],
+            'Magento': ['magento', '/skin/frontend/'],
+            'Shopify': ['shopify', 'shopify.shop'],
+            'Wix': ['wix.com', 'wixstatic.com'],
+            'Squarespace': ['squarespace', 'sqsp'],
+            'Ghost': ['ghost', 'ghost.org']
+        }
+        
+        for cms, patterns in cms_patterns.items():
+            if isinstance(patterns, list):
+                for pattern in patterns:
+                    if pattern in content:
+                        data['tech'].add(cms)
+                        break
     
-    def _discover_api_endpoints(self, soup: BeautifulSoup, html: str) -> List[str]:
-        """Discover API endpoints from page content"""
-        endpoints = set()
-        
-        api_patterns = [
-            r'["\']/(api|rest|graphql|v\d+)/[a-zA-Z0-9/_-]+["\']',
-            r'https?://[^"\']+/(api|rest|graphql)/[^"\']+',
-            r'/api/v\d+/[a-zA-Z0-9/_-]+'
+    def _check_security_headers(self, headers, data):
+        """Check for security headers"""
+        security_headers = [
+            'Content-Security-Policy',
+            'X-Frame-Options',
+            'X-Content-Type-Options',
+            'X-XSS-Protection',
+            'Strict-Transport-Security',
+            'Referrer-Policy',
+            'Permissions-Policy',
+            'X-Permitted-Cross-Domain-Policies'
         ]
         
-        for pattern in api_patterns:
-            matches = re.findall(pattern, html, re.IGNORECASE)
+        for header in security_headers:
+            if header in headers:
+                data['security_headers'][header] = headers[header]
+    
+    def _extract_server_info(self, headers, data):
+        """Extract server information"""
+        data['server_info'] = {
+            'server': headers.get('Server', 'Unknown'),
+            'powered_by': headers.get('X-Powered-By', 'Unknown'),
+            'content_type': headers.get('Content-Type', 'Unknown'),
+            'cache_control': headers.get('Cache-Control', 'None'),
+            'last_modified': headers.get('Last-Modified', 'None')
+        }
+    
+    def _check_additional_files(self, data):
+        """Check for robots.txt, sitemap.xml, etc."""
+        additional_files = {
+            'robots.txt': '/robots.txt',
+            'sitemap.xml': '/sitemap.xml',
+            'humans.txt': '/humans.txt',
+            'security.txt': '/.well-known/security.txt',
+            'ads.txt': '/ads.txt'
+        }
+        
+        for name, path in additional_files.items():
+            try:
+                url = urljoin(self.url, path)
+                response = self.session.get(url, timeout=self.timeout, verify=False)
+                if response.status_code == 200:
+                    data[name.replace('.', '_')] = response.text
+            except:
+                pass
+    
+    def _extract_contact_info(self, text, data):
+        """Extract contact information"""
+        # Email addresses
+        email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+        emails = re.findall(email_pattern, text)
+        data['emails'].update(emails[:10])
+        
+        # Phone numbers (simple pattern)
+        phone_pattern = r'[\+]?[(]?[0-9]{3}[)]?[-\s\.]?[0-9]{3}[-\s\.]?[0-9]{4,6}'
+        phones = re.findall(phone_pattern, text)
+        data['phone_numbers'].update(phones[:10])
+        
+        # Social media links
+        social_patterns = {
+            'facebook': r'facebook\.com/[a-zA-Z0-9._-]+',
+            'twitter': r'twitter\.com/[a-zA-Z0-9._-]+',
+            'linkedin': r'linkedin\.com/(in|company)/[a-zA-Z0-9._-]+',
+            'instagram': r'instagram\.com/[a-zA-Z0-9._-]+',
+            'youtube': r'youtube\.com/(channel|user)/[a-zA-Z0-9._-]+'
+        }
+        
+        for platform, pattern in social_patterns.items():
+            matches = re.findall(pattern, text, re.IGNORECASE)
             for match in matches:
-                if isinstance(match, tuple):
-                    match = match[0]
-                endpoints.add(match.strip('"\''))
-        
-        scripts = soup.find_all('script')
-        for script in scripts:
-            if script.string:
-                for pattern in api_patterns:
-                    matches = re.findall(pattern, script.string)
-                    for match in matches:
-                        if isinstance(match, tuple):
-                            match = match[0]
-                        endpoints.add(match.strip('"\''))
-        
-        return sorted(list(endpoints))[:20]
+                data['social_links'].add(f"https://{match}")
     
-    def _analyze_security_headers(self, headers: dict) -> Dict:
-        """Analyze security headers"""
-        security_headers = {
-            'Strict-Transport-Security': headers.get('Strict-Transport-Security'),
-            'Content-Security-Policy': headers.get('Content-Security-Policy'),
-            'X-Frame-Options': headers.get('X-Frame-Options'),
-            'X-Content-Type-Options': headers.get('X-Content-Type-Options'),
-            'X-XSS-Protection': headers.get('X-XSS-Protection'),
-            'Referrer-Policy': headers.get('Referrer-Policy'),
-            'Permissions-Policy': headers.get('Permissions-Policy')
-        }
-        
-        analysis = {
-            'present': [k for k, v in security_headers.items() if v],
-            'missing': [k for k, v in security_headers.items() if not v],
-            'headers': {k: v for k, v in security_headers.items() if v}
-        }
-        
-        return analysis
+    def get_sitemap(self):
+        """Get sitemap if available"""
+        try:
+            sitemap_url = urljoin(self.url, '/sitemap.xml')
+            response = self.session.get(sitemap_url, timeout=self.timeout, verify=False)
+            if response.status_code == 200:
+                return response.text
+        except:
+            pass
+        return None
     
-    def _extract_keywords(self, soup: BeautifulSoup, html: str) -> List[str]:
-        """Extract meaningful keywords from page"""
-        keywords = set()
-        
-        meta_keywords = soup.find('meta', attrs={'name': 'keywords'})
-        if meta_keywords and meta_keywords.get('content'):
-            keywords.update(meta_keywords['content'].split(','))
-        
-        if soup.title and soup.title.string:
-            words = re.findall(r'\b[a-zA-Z]{4,}\b', soup.title.string)
-            keywords.update(words)
-        
-        headings = soup.find_all(['h1', 'h2', 'h3'])
-        for heading in headings[:10]:
-            if heading.string:
-                words = re.findall(r'\b[a-zA-Z]{4,}\b', heading.string)
-                keywords.update(words)
-        
-        path_keywords = re.findall(r'/([a-zA-Z]{3,})', self.url)
-        keywords.update(path_keywords)
-        
-        common_words = {'home', 'page', 'main', 'index', 'welcome', 'about', 'contact', 
-                       'privacy', 'terms', 'policy', 'site', 'website', 'company'}
-        keywords = {k.strip().lower() for k in keywords if len(k.strip()) > 2}
-        keywords = keywords - common_words
-        
-        return sorted(list(keywords))[:30]
+    def get_robots_txt(self):
+        """Get robots.txt if available"""
+        try:
+            robots_url = urljoin(self.url, '/robots.txt')
+            response = self.session.get(robots_url, timeout=self.timeout, verify=False)
+            if response.status_code == 200:
+                return response.text
+        except:
+            pass
+        return None
+
+# Utility functions
+def extract_domain_keywords(domain):
+    """Extract keywords from domain name"""
+    domain = domain.replace('www.', '').split('.')[0]
+    keywords = re.findall(r'[a-zA-Z]{3,}', domain)
+    return [k.lower() for k in keywords]
+
+def analyze_response_headers(headers):
+    """Analyze response headers for information"""
+    info = {}
+    
+    if 'Server' in headers:
+        info['server'] = headers['Server']
+    
+    if 'X-Powered-By' in headers:
+        info['powered_by'] = headers['X-Powered-By']
+    
+    if 'Set-Cookie' in headers:
+        cookies = headers.get_list('Set-Cookie')
+        info['cookies'] = [c.split(';')[0] for c in cookies]
+    
+    return info
