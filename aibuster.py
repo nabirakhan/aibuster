@@ -6,7 +6,7 @@ import os
 from colorama import Fore, Style, init
 from ai import EnhancedAIPathGenerator
 from recon import AdvancedWebRecon
-from buster import PathBuster
+from buster import EnhancedPathBuster
 from output import OutputFormatter
 try:
     from plugins import PluginManager
